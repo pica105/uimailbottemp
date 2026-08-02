@@ -76,8 +76,18 @@ async def _deactivate_and_notify(db: Database, bot: Bot, account: dict) -> None:
 
 
 async def _sync_account_with_retry(
-    db: Database, bot: Bot, account: dict, session: aiohttp.ClientSession
+    db: Database,
+    bot: Bot,
+    account: dict,
+    session: aiohttp.ClientSession,
+    *,
+    retried: bool = False,
 ) -> None:
+    """Sync one account; on auth failure refresh tokens and retry once.
+
+    ``retried`` guards against infinite refresh-retry loops when a fresh
+    token is still rejected (e.g. IMAP disabled server-side).
+    """
     try:
         result = await _sync_one_account(db, account, session)
         if result.get("new", 0) > 0:
@@ -86,7 +96,7 @@ async def _sync_account_with_retry(
                 account["provider"], account["email"], result["new"], result["total"],
             )
     except sync_gmail.GmailApiError as exc:
-        if "unauthorized" in str(exc):
+        if "unauthorized" in str(exc) and not retried:
             updated = await _refresh_tokens(db, account)
             if updated is None:
                 await _deactivate_and_notify(db, bot, account)
@@ -94,20 +104,27 @@ async def _sync_account_with_retry(
                 # Retry once with the fresh token, keeping the joined user
                 # fields (language, interval, muted categories) intact.
                 updated = {**account, **updated}
-                await _sync_account_with_retry(db, bot, updated, session)
+                await _sync_account_with_retry(db, bot, updated, session, retried=True)
             return
         await db.increment_error(account["id"])
         logger.error("Sync failed for %s: %s", account["email"], exc)
     except sync_yandex.YandexAuthError as exc:
         # Yandex rejects the access token (e.g. issued before IMAP access
         # was enabled). Refresh once and retry; deactivate on failure.
-        updated = await _refresh_tokens(db, account)
-        if updated is None:
-            await _deactivate_and_notify(db, bot, account)
-        else:
-            updated = {**account, **updated}
-            await _sync_account_with_retry(db, bot, updated, session)
-        return
+        if not retried:
+            logger.warning(
+                "Yandex auth failed for %s, refreshing tokens: %s",
+                account["email"], exc,
+            )
+            updated = await _refresh_tokens(db, account)
+            if updated is None:
+                await _deactivate_and_notify(db, bot, account)
+            else:
+                updated = {**account, **updated}
+                await _sync_account_with_retry(db, bot, updated, session, retried=True)
+            return
+        await db.increment_error(account["id"])
+        logger.error("Sync failed for %s: %s", account["email"], exc)
     except Exception as exc:  # noqa: BLE001 - per-account isolation
         await db.increment_error(account["id"])
         logger.error("Sync failed for %s: %s", account["email"], exc)

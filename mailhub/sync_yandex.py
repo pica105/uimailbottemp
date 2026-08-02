@@ -21,6 +21,7 @@ import email
 import email.utils
 import logging
 import re
+from contextlib import suppress
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.message import Message
@@ -135,7 +136,8 @@ async def _connect(account: dict) -> aioimaplib.IMAP4_SSL:
     # authenticate() anymore); it returns a Response, not raising on NO.
     resp = await client.xoauth2(email_address, access_token)
     if resp.result != "OK":
-        await client.logout()
+        with suppress(Exception):  # noqa: BLE001 - logout must not mask the real error
+            await client.logout()
         detail = resp.lines[0] if resp.lines else b""
         raise YandexAuthError(
             f"XOAUTH2 auth failed for {email_address}: {detail!r}"
@@ -151,7 +153,7 @@ async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, by
     data = resp.lines
     if not data or not data[0]:
         return []
-    uids = [int(u.decode()) for u in data[0].split() if u]
+    uids = [int(u) for u in data[0].split() if u.isdigit()]
     # Newest messages first (like the Gmail first sync), so the initial
     # import contains recent mail rather than the oldest batch.
     pending = [u for u in uids if u >= start_uid][-FETCH_BATCH:]
