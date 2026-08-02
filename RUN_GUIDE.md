@@ -30,9 +30,10 @@ ssh root@91.186.211.218        # порт 22, пароль — из перепи
 systemctl start mailhub mailhub-web
 ```
 
-Проверка, что всё живое:
+⚠️ Бекенд стартует ~10–15 с (бот сначала подключается к Telegram API, и только потом поднимается HTTP-сервер). Сразу после `start` curl вернёт **502 Bad Gateway** — это норма, подождите и проверяйте снова:
 
 ```
+sleep 10
 systemctl is-active mailhub mailhub-web      # active active
 curl -sk https://127.0.0.1/api/health        # {"status":"ok"}
 ss -tln | grep -E ':(8000|3001) '            # оба порта слушаются
@@ -52,6 +53,8 @@ venv/bin/python -m mailhub.main
 ```
 systemctl stop mailhub mailhub-web
 ```
+
+`mailhub-web` после stop может показать `failed` — это ложный флаг от SIGTERM (код 143), сервис исправен (`SuccessExitStatus=143` прописан в unit). Не пугайтесь, при следующем старте всё работает.
 
 ## 5. Автозапуск при перезагрузке VPS
 
