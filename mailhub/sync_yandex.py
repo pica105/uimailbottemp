@@ -22,7 +22,9 @@ import email.utils
 import logging
 import re
 from datetime import datetime, timezone
+from email.header import decode_header, make_header
 from email.message import Message
+from html.parser import HTMLParser
 
 import aiohttp
 import aioimaplib
@@ -33,6 +35,53 @@ from .crypto import decrypt
 from .database import Database
 
 logger = logging.getLogger(__name__)
+
+
+class _HtmlTextExtractor(HTMLParser):
+    """Collect visible text from an HTML part (skips script/style)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("script", "style"):
+            self._skip_depth += 1
+        if tag in ("p", "br", "div", "tr", "li", "h1", "h2", "h3", "blockquote"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style") and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self.parts.append(data)
+
+
+def _html_to_text(html: str) -> str:
+    """Best-effort HTML → plain text conversion (stdlib only)."""
+    parser = _HtmlTextExtractor()
+    try:
+        parser.feed(html)
+    except Exception:  # noqa: BLE001 - malformed HTML must not break sync
+        return ""
+    text = " ".join(parser.parts)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" ?\n ?", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _decode_header_value(value: str | None) -> str:
+    """Decode RFC 2047 encoded-words ("=?utf-8?b?...?=") into plain text."""
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:  # noqa: BLE001 - fall back to the raw value
+        return value
 
 IMAP_HOST = "imap.yandex.ru"
 IMAP_PORT = 993
@@ -103,7 +152,9 @@ async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, by
     if not data or not data[0]:
         return []
     uids = [int(u.decode()) for u in data[0].split() if u]
-    pending = [u for u in uids if u >= start_uid][:FETCH_BATCH]
+    # Newest messages first (like the Gmail first sync), so the initial
+    # import contains recent mail rather than the oldest batch.
+    pending = [u for u in uids if u >= start_uid][-FETCH_BATCH:]
     if not pending:
         return []
 
@@ -141,12 +192,13 @@ async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, by
 
 
 def _message_to_record(uid: int, msg: Message) -> dict | None:
-    subject = msg.get("Subject") or "(no subject)"
+    subject = _decode_header_value(msg.get("Subject")) or "(no subject)"
     sender = msg.get("From") or ""
     sender_name = None
     sender_email = sender.strip()
     if "<" in sender:
-        sender_name = sender.split("<")[0].strip().strip('"') or None
+        name_part = sender.split("<")[0].strip().strip('"')
+        sender_name = _decode_header_value(name_part) or None
         sender_email = sender.split("<")[1].split(">")[0].strip()
 
     date_str = msg.get("Date")
@@ -156,18 +208,31 @@ def _message_to_record(uid: int, msg: Message) -> dict | None:
         if parsed is not None:
             received_at = int(parsed.timestamp())
 
-    # Plain-text body only (MVP per spec).
+    # Prefer the text/plain part; fall back to stripping HTML (most
+    # commercial mail is HTML-only and would otherwise have no body).
     body_text = ""
     for part in msg.walk():
-        if part.get_content_type() == "text/plain" and not part.get_filename():
-            try:
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    body_text = payload.decode(charset, "replace")
-                    break
-            except Exception:  # noqa: BLE001
-                continue
+        if part.get_filename():
+            continue
+        content_type = part.get_content_type()
+        if content_type not in ("text/plain", "text/html"):
+            continue
+        try:
+            payload = part.get_payload(decode=True)
+        except Exception:  # noqa: BLE001
+            continue
+        if not payload:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            text = payload.decode(charset, "replace")
+        except Exception:  # noqa: BLE001 - unknown charset
+            text = payload.decode("utf-8", "replace")
+        if content_type == "text/plain":
+            body_text = text
+            break
+        if not body_text:
+            body_text = _html_to_text(text)
 
     category = classify_yandex_message(msg)
     snippet = " ".join(body_text.split())[:200]

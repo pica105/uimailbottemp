@@ -113,8 +113,15 @@ async def _sync_account_with_retry(
         logger.error("Sync failed for %s: %s", account["email"], exc)
 
 
-async def _notify_new_messages(db: Database, bot: Bot, account: dict) -> None:
-    """Send notifications for un-notified messages of this account."""
+async def _notify_new_messages(
+    db: Database, bot: Bot, account: dict, *, skip_initial: bool = False
+) -> None:
+    """Send notifications for un-notified messages of this account.
+
+    ``skip_initial=True`` suppresses notifications for the very first import
+    (the account's cache was empty before this sync) — the user just
+    connected the account and should not be flooded with old mail.
+    """
     muted: list[str] = []
     try:
         muted = json.loads(account.get("user_muted_categories") or "[]")
@@ -127,6 +134,10 @@ async def _notify_new_messages(db: Database, bot: Bot, account: dict) -> None:
     for msg in messages:
         if msg["category"] in muted:
             # Mark muted messages as notified so they're not re-sent later.
+            await db.mark_notified(msg["id"])
+            continue
+        if skip_initial:
+            # First import: cache the mail but do not notify about it.
             await db.mark_notified(msg["id"])
             continue
         await send_new_mail_notification(
@@ -146,8 +157,11 @@ async def sync_loop(db: Database, bot: Bot, stop_event: asyncio.Event) -> None:
                 for account in accounts:
                     next_sync = account.get("next_sync_at")
                     if next_sync is None or int(next_sync) <= now:
+                        was_empty = await db.get_message_count(account["id"]) == 0
                         await _sync_account_with_retry(db, bot, account, session)
-                        await _notify_new_messages(db, bot, account)
+                        await _notify_new_messages(
+                            db, bot, account, skip_initial=was_empty
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - engine must keep running

@@ -380,6 +380,14 @@ class Database:
             "SELECT * FROM messages_cache WHERE id = ?", (message_id,)
         )
 
+    async def get_message_count(self, account_id: int) -> int:
+        """Number of cached messages for an account (0 = not yet imported)."""
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n FROM messages_cache WHERE account_id = ?",
+            (account_id,),
+        )
+        return int((row or {}).get("n", 0))
+
     async def get_unnotified_messages(self, account_id: int, limit: int = 10) -> list[dict]:
         """Messages that have not been notified yet, oldest first.
 

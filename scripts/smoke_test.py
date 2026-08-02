@@ -175,6 +175,46 @@ def test_gmail_helpers() -> None:
     print("  ✓ gmail helpers")
 
 
+def test_yandex_parsing() -> None:
+    import base64
+    import email as email_mod
+
+    from mailhub.sync_yandex import _decode_header_value, _html_to_text, _message_to_record
+
+    # RFC 2047 encoded-word subject decoding
+    enc = base64.b64encode("Привет, мир".encode("utf-8")).decode("ascii")
+    assert _decode_header_value(f"=?utf-8?b?{enc}?=") == "Привет, мир"
+
+    # HTML → text fallback (skips script content)
+    html = "<html><body><p>Hello <b>world</b>!</p><script>alert(1)</script></body></html>"
+    text = _html_to_text(html)
+    assert "Hello world" in text
+    assert "alert" not in text
+
+    # Full record from a raw message (encoded headers + plain body)
+    name_enc = base64.b64encode("Тестер".encode("utf-8")).decode("ascii")
+    raw = (
+        f"From: =?utf-8?b?{name_enc}?= <tester@example.com>\r\n"
+        "To: a@b.c\r\n"
+        f"Subject: =?utf-8?b?{enc}?=\r\n"
+        "Date: Tue, 01 Aug 2026 12:00:00 +0300\r\n"
+        "MIME-Version: 1.0\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "\r\n"
+        "Тело письма"
+    )
+    msg = email_mod.message_from_bytes(raw.encode("utf-8"))
+    rec = _message_to_record(7, msg)
+    assert rec is not None
+    assert rec["subject"] == "Привет, мир"
+    assert rec["sender_name"] == "Тестер"
+    assert rec["sender_email"] == "tester@example.com"
+    assert rec["body_text"] == "Тело письма"
+    assert rec["provider_message_id"] == "yandex-7"
+    assert rec["received_at"] > 0
+    print("  ✓ yandex message parsing (decoding + html fallback)")
+
+
 if __name__ == "__main__":
     print("Running MailHub backend smoke tests...")
     test_crypto()
@@ -183,4 +223,5 @@ if __name__ == "__main__":
     test_init_data()
     test_oauth_urls()
     test_gmail_helpers()
+    test_yandex_parsing()
     print("\nAll smoke tests passed ✅")
