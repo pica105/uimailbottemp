@@ -412,6 +412,18 @@ class Database:
             (self._now(), message_id),
         )
 
+    async def mark_all_notified(self, account_id: int) -> None:
+        """Mark every un-notified message of an account as notified.
+
+        Used by the sync engine to suppress the initial-import notification
+        flood when a user connects an account with existing mail.
+        """
+        await self._execute(
+            "UPDATE messages_cache SET notified_at = ? "
+            "WHERE account_id = ? AND notified_at IS NULL",
+            (self._now(), account_id),
+        )
+
     # ------------------------------------------------------------------
     # OAuth state
     # ------------------------------------------------------------------

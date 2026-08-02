@@ -128,16 +128,17 @@ async def _notify_new_messages(
     except json.JSONDecodeError:
         muted = []
 
+    if skip_initial:
+        # First import: cache all the mail but do not notify about it.
+        await db.mark_all_notified(account["id"])
+        return
+
     messages = await db.get_unnotified_messages(account["id"], limit=10)
     lang = account.get("user_language") or "en"
 
     for msg in messages:
         if msg["category"] in muted:
             # Mark muted messages as notified so they're not re-sent later.
-            await db.mark_notified(msg["id"])
-            continue
-        if skip_initial:
-            # First import: cache the mail but do not notify about it.
             await db.mark_notified(msg["id"])
             continue
         await send_new_mail_notification(
