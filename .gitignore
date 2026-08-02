@@ -13,3 +13,6 @@ build/
 *.egg-info/
 playwright-report/
 test-results/
+
+# VPS scripts contain credentials - keep local
+scripts/vps_*
