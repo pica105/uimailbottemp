@@ -103,9 +103,10 @@ def _extract_rfc822(line: bytes) -> bytes | None:
 
 async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, bytes]]:
     """Fetch messages with UID >= start_uid. Returns (uid, parsed msg, raw)."""
-    status, data = await client.uid("search", "ALL")
-    if status != "OK":
-        raise YandexApiError(f"UID SEARCH failed: {data}")
+    resp = await client.uid_search("ALL")
+    if resp.result != "OK":
+        raise YandexApiError(f"UID SEARCH failed: {resp.lines}")
+    data = resp.lines
     if not data or not data[0]:
         return []
     uids = [int(u.decode()) for u in data[0].split() if u]
@@ -114,9 +115,10 @@ async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, by
         return []
 
     uid_set = ",".join(str(u) for u in pending)
-    status, raw = await client.uid("fetch", uid_set, "(UID BODY.PEEK[])")
-    if status != "OK":
-        raise YandexApiError(f"UID FETCH failed: {data}")
+    resp = await client.uid("fetch", uid_set, "(UID BODY.PEEK[])")
+    if resp.result != "OK":
+        raise YandexApiError(f"UID FETCH failed: {resp.lines}")
+    raw = resp.lines
 
     results: list[tuple[int, Message, bytes]] = []
     # aioimaplib returns one line per message: b"<seq> (UID <uid> BODY[] {n}\r\n<msg>)"
