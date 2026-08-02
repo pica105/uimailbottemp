@@ -73,7 +73,7 @@ async def _connect(account: dict) -> aioimaplib.IMAP4_SSL:
     access_token = decrypt(account["encrypted_access_token"])
     email_address = account["email"]
     client = aioimaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-    await client.wait_hello()
+    await client.wait_hello_from_server()
     try:
         await client.authenticate(
             "XOAUTH2", lambda _: _xoauth2_string(email_address, access_token)
