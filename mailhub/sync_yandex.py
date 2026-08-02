@@ -43,6 +43,14 @@ class YandexApiError(Exception):
     """Raised on Yandex API / IMAP failures."""
 
 
+class YandexAuthError(YandexApiError):
+    """Raised when XOAUTH2 authentication to the IMAP server fails.
+
+    The caller (sync engine) reacts by refreshing the OAuth tokens and
+    retrying once; if the refresh fails the account is deactivated.
+    """
+
+
 def yandex_oauth_redirect_uri() -> str:
     return f"{settings.BASE_URL.rstrip('/')}/oauth/yandex/callback"
 
@@ -65,22 +73,20 @@ async def exchange_code(code: str) -> dict:
             return data
 
 
-def _xoauth2_string(email_address: str, access_token: str) -> str:
-    return f"user={email_address}\x01auth=Bearer {access_token}\x01\x01"
-
-
 async def _connect(account: dict) -> aioimaplib.IMAP4_SSL:
     access_token = decrypt(account["encrypted_access_token"])
     email_address = account["email"]
     client = aioimaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     await client.wait_hello_from_server()
-    try:
-        await client.authenticate(
-            "XOAUTH2", lambda _: _xoauth2_string(email_address, access_token)
-        )
-    except Exception as exc:  # noqa: BLE001
+    # aioimaplib 2.x has a native xoauth2() (there is no generic
+    # authenticate() anymore); it returns a Response, not raising on NO.
+    resp = await client.xoauth2(email_address, access_token)
+    if resp.result != "OK":
         await client.logout()
-        raise YandexApiError(f"XOAUTH2 auth failed for {email_address}") from exc
+        detail = resp.lines[0] if resp.lines else b""
+        raise YandexAuthError(
+            f"XOAUTH2 auth failed for {email_address}: {detail!r}"
+        )
     return client
 
 

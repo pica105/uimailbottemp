@@ -98,6 +98,16 @@ async def _sync_account_with_retry(
             return
         await db.increment_error(account["id"])
         logger.error("Sync failed for %s: %s", account["email"], exc)
+    except sync_yandex.YandexAuthError as exc:
+        # Yandex rejects the access token (e.g. issued before IMAP access
+        # was enabled). Refresh once and retry; deactivate on failure.
+        updated = await _refresh_tokens(db, account)
+        if updated is None:
+            await _deactivate_and_notify(db, bot, account)
+        else:
+            updated = {**account, **updated}
+            await _sync_account_with_retry(db, bot, updated, session)
+        return
     except Exception as exc:  # noqa: BLE001 - per-account isolation
         await db.increment_error(account["id"])
         logger.error("Sync failed for %s: %s", account["email"], exc)
