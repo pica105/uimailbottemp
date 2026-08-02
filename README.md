@@ -8,7 +8,7 @@ Read and manage Gmail and Yandex mailboxes from inside Telegram. The bot deliver
 - **New-mail notifications** to Telegram, muted categories supported
 - **Mini App** (inside Telegram): inbox, category tabs (All / Important / Promo / Spam), message detail with body
 - **Mark-as-read** that syncs back to the real mailbox (Gmail `modify`, Yandex `\Seen`)
-- **Elastic polling** per account: 10 s right after new mail, grows with idle time, caps at 5 min. A new message resets it to 10 s
+- **Elastic polling** per account (fully automatic): 10 s right after new mail, grows with idle time, caps at 5 min. A new message resets it to 10 s
 - **RU / EN**, native Telegram theme (light and dark)
 
 ## How it works
@@ -28,7 +28,7 @@ Sync details:
 
 - **Gmail** — REST only. First import: latest 50 messages. Then `users.history` incremental from the `historyId` obtained via `users.getProfile`. Mark-as-read removes the `UNREAD` label (`messages.modify`).
 - **Yandex** — IMAP over XOAUTH2 (`aioimaplib`, `imap.yandex.ru:993`). UID-based incremental search, newest-first batches of 50. Mark-as-read issues `STORE +FLAGS (\Seen)`.
-- **Elastic interval** — `max(10 s, min(cap, idle_seconds / 10))` where `cap = min(5 min, user setting)`. Fresh mail → 10 s. Silent mailbox → grows toward the cap. Errors back off exponentially (`2^n × 60 s`, capped at 1 h).
+- **Elastic interval** — `max(10 s, min(5 min, idle_seconds / 10))`, fully automatic per account (not user-configurable). Fresh mail → 10 s. Silent mailbox → grows toward the 5 min cap. Errors back off exponentially (`2^n × 60 s`, capped at 1 h).
 
 Frontend is a Next.js Mini App served from the same domain, authenticated by Telegram WebApp `initData` (HMAC-SHA256) on every API call.
 

@@ -364,18 +364,8 @@ async def api_update_settings(request: web.Request) -> web.Response:
     if language is not None and language not in ("ru", "en"):
         return web.json_response({"error": "invalid_language"}, status=400)
 
-    polling_interval: int | None = None
-    if body.get("polling_interval_seconds") is not None:
-        try:
-            polling_interval = int(body["polling_interval_seconds"])
-        except (TypeError, ValueError):
-            return web.json_response({"error": "invalid_interval"}, status=400)
-        if not (
-            settings.POLL_MIN_SECONDS
-            <= polling_interval
-            <= settings.SETTINGS_MAX_INTERVAL_SECONDS
-        ):
-            return web.json_response({"error": "invalid_interval"}, status=400)
+    # polling_interval_seconds is intentionally ignored: the interval is
+    # fully automatic (elastic 10s..5min) and not user-configurable.
 
     muted = body.get("muted_categories")
     if muted is not None and not isinstance(muted, list):
@@ -388,7 +378,6 @@ async def api_update_settings(request: web.Request) -> web.Response:
     updated = await db.update_settings(
         telegram_id,
         language=language,
-        polling_interval_seconds=polling_interval,
         muted_categories=muted,
     )
     # Keep the response shape identical to GET /api/settings so the Mini App

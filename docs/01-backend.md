@@ -46,12 +46,11 @@
 **Эластичный интервал (на аккаунт):**
 
 ```
-interval = max(POLL_MIN, min(cap, idle_seconds // 10))
-cap      = min(POLL_MAX, polling_interval_seconds пользователя)
-POLL_MIN = 10с, POLL_MAX = 300с, ручная настройка 10..1800с
+interval = max(POLL_MIN, min(POLL_MAX, idle_seconds // 10))
+POLL_MIN = 10с, POLL_MAX = 300с
 ```
 
-Свежее письмо → 10 с. Тихий ящик → рост к потолку. Ошибки: `next_sync_at = now + min(2^n * 60, 3600)`.
+Интервал полностью автоматический, ручная настройка отсутствует. Свежее письмо → 10 с. Тихий ящик → рост к потолку (5 мин). Ошибки: `next_sync_at = now + min(2^n * 60, 3600)`.
 
 **Mark-read:** API/бот ставят `is_read` локально и через `mark_read.py` (фоновая задача) отправляют в провайдер: Gmail `messages.modify` (`removeLabelIds: ["UNREAD"]`), Яндекс `STORE +FLAGS (\Seen)`. Провайдер-фейл не ломает локальный ответ. Для Gmail нужен scope `gmail.modify` — старые токены (readonly) дают 403, нужно переподключить аккаунт.
 

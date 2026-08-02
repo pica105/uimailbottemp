@@ -83,9 +83,11 @@ async def _db_scenario(db: Database) -> None:
     await db.set_language(42, "ru")
     assert (await db.get_settings(42))["language"] == "ru"
 
-    await db.update_settings(42, polling_interval_seconds=600, muted_categories=["promo"])
+    await db.update_settings(42, muted_categories=["promo"])
     settings_row = await db.get_settings(42)
-    assert settings_row["polling_interval_seconds"] == 600
+    # The polling interval is automatic-only (elastic 10s..5min): it must
+    # not be changeable through the settings API.
+    assert settings_row["polling_interval_seconds"] == 300
     assert settings_row["muted_categories"] == ["promo"]
 
     acc = await db.add_account(
@@ -216,8 +218,8 @@ def test_yandex_parsing() -> None:
 
 
 def test_adaptive_interval() -> None:
-    """Elastic polling: 10s on fresh mail, proportional growth, 5 min cap,
-    and the manual setting acting as a per-user cap."""
+    """Elastic polling: 10s on fresh mail, proportional growth, 5 min cap.
+    Fully automatic — a manual setting must not influence it."""
     from mailhub.sync_engine import _adaptive_interval
 
     async def scenario() -> None:
@@ -243,34 +245,34 @@ def test_adaptive_interval() -> None:
                 received_at=received_at,
             )
 
-        base = {"polling_interval_seconds": 300}
-
-        # No mail imported yet → user-configured pace (300s default).
+        # No mail imported yet → maximum pace (5 min).
         acc = await make_account()
-        assert await _adaptive_interval(db, {**acc, **base}) == 300
+        assert await _adaptive_interval(db, acc) == 300
 
         # Fresh mail (20s old) → floor of 10s.
         acc = await make_account()
         await add_msg(acc, "yandex-1", now - 20)
-        assert await _adaptive_interval(db, {**acc, **base}) == 10
+        assert await _adaptive_interval(db, acc) == 10
 
         # Idle 20 minutes → 120s (gap // 10).
         acc = await make_account()
         await add_msg(acc, "yandex-2", now - 1200)
-        assert await _adaptive_interval(db, {**acc, **base}) == 120
+        assert await _adaptive_interval(db, acc) == 120
 
         # Idle 2 hours → capped at 300s (5 minutes).
         acc = await make_account()
         await add_msg(acc, "yandex-3", now - 7200)
-        assert await _adaptive_interval(db, {**acc, **base}) == 300
+        assert await _adaptive_interval(db, acc) == 300
 
-        # Manual cap 60s → the elastic value never exceeds it.
-        assert await _adaptive_interval(db, {**acc, **base, "polling_interval_seconds": 60}) == 60
+        # A manual setting on the account must be ignored (automatic-only).
+        assert await _adaptive_interval(
+            db, {**acc, "polling_interval_seconds": 60}
+        ) == 300
 
         await db.close()
 
     asyncio.run(scenario())
-    print("  ✓ elastic polling interval (10s → 300s, reset on new mail)")
+    print("  ✓ elastic polling interval (10s → 300s, auto-only, reset on new mail)")
 
 
 if __name__ == "__main__":

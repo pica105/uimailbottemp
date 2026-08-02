@@ -62,9 +62,7 @@ async def seed(db: Database) -> None:
         TELEGRAM_ID, username="alice", first_name="Alice", last_name="A"
     )
     await db.set_language(TELEGRAM_ID, "ru")
-    await db.update_settings(
-        TELEGRAM_ID, polling_interval_seconds=600, muted_categories=["promo"]
-    )
+    await db.update_settings(TELEGRAM_ID, muted_categories=["promo"])
     gmail = await db.add_account(
         TELEGRAM_ID, "gmail", "alice@gmail.com",
         encrypt("fake-access"), encrypt("fake-refresh"), int(time.time()) + 3600,
@@ -161,26 +159,27 @@ async def main() -> None:
         ok = (
             status == 200
             and body["settings"]["language"] == "ru"
-            and body["settings"]["polling_interval_seconds"] == 600
+            and body["settings"]["polling_interval_seconds"] == 300
             and "promo" in body["settings"]["muted_categories"]
             and len(body["settings"]["accounts"]) == 2
         )
         checks.append(("settings", ok, status, body))
 
-        # 8. PATCH settings — response must include accounts (contract fix)
+        # 8. PATCH settings — interval is ignored (automatic-only);
+        #    response must include accounts (contract fix)
         status, body = await patch(
             "/api/settings",
-            {"language": "en", "polling_interval_seconds": 300, "muted_categories": ["spam"]},
+            {"language": "en", "polling_interval_seconds": 60, "muted_categories": ["spam"]},
             headers,
         )
         ok = (
             status == 200
             and body["settings"]["language"] == "en"
-            and body["settings"]["polling_interval_seconds"] == 300
+            and body["settings"]["polling_interval_seconds"] == 300  # ignored
             and body["settings"]["muted_categories"] == ["spam"]
             and len(body["settings"]["accounts"]) == 2
         )
-        checks.append(("PATCH settings (accounts present)", ok, status, body))
+        checks.append(("PATCH settings (interval ignored, accounts present)", ok, status, body))
 
         # 9. unauthorized without initData
         status, body = await get("/api/accounts")

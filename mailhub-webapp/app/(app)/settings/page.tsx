@@ -19,7 +19,6 @@ import { AccountsList } from "@/components/settings/AccountsList";
 
 const settingsSchema = z.object({
   language: z.enum(["ru", "en"]),
-  polling_interval_seconds: z.number().min(10).max(1800),
   muted_categories: z.array(z.enum(["promo", "spam", "other"])),
 });
 
@@ -36,7 +35,6 @@ export default function SettingsPage() {
     resolver: zodResolver(settingsSchema),
     defaultValues: {
       language: "en",
-      polling_interval_seconds: 300,
       muted_categories: [],
     },
   });
@@ -47,7 +45,6 @@ export default function SettingsPage() {
       const s = data.settings;
       form.reset({
         language: s.language,
-        polling_interval_seconds: s.polling_interval_seconds,
         muted_categories: s.muted_categories,
       });
       setLanguage(s.language);
@@ -58,7 +55,6 @@ export default function SettingsPage() {
     updateSettings.mutate(
       {
         language: values.language,
-        polling_interval_seconds: values.polling_interval_seconds,
         muted_categories: values.muted_categories,
       },
       {
@@ -92,12 +88,7 @@ export default function SettingsPage() {
             value={form.watch("language") as Language}
             onChange={(lang) => form.setValue("language", lang, { shouldDirty: true })}
           />
-          <PollingInterval
-            value={form.watch("polling_interval_seconds")}
-            onChange={(seconds) =>
-              form.setValue("polling_interval_seconds", seconds, { shouldDirty: true })
-            }
-          />
+          <PollingInterval />
           <MutedCategories
             value={muted}
             onChange={(cats) =>

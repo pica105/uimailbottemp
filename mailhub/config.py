@@ -59,14 +59,11 @@ class Settings(BaseSettings):
     GMAIL_HISTORY_PAGE_SIZE: int = 100
 
     # --- Elastic polling ------------------------------------------------
-    # The engine polls fast while mail is fresh and slows down when idle:
+    # Fully automatic per-account interval (not user-configurable):
     #   - POLL_MIN_SECONDS: floor (poll this often right after new mail)
     #   - POLL_MAX_SECONDS: cap of the automatic growth (5 minutes)
-    #   - SETTINGS_MAX_INTERVAL_SECONDS: upper bound of the manual setting,
-    #     which acts as a per-user cap for the automatic interval
     POLL_MIN_SECONDS: int = 10
     POLL_MAX_SECONDS: int = 300
-    SETTINGS_MAX_INTERVAL_SECONDS: int = 1800
 
     # --- Heuristic classification --------------------------------------
     # Small blacklists used by classifier.py for Yandex/IMAP messages.

@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS users (
     first_name TEXT,
     last_name TEXT,
     language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('ru', 'en')),
-    -- bounds mirror config.POLL_MIN_SECONDS / SETTINGS_MAX_INTERVAL_SECONDS
+    -- legacy column: interval is fully automatic now (elastic 10s..5min),
+    -- nothing writes it anymore; CHECK kept for schema stability
     polling_interval_seconds INTEGER NOT NULL DEFAULT 300
         CHECK(polling_interval_seconds BETWEEN 10 AND 1800),
     muted_categories TEXT NOT NULL DEFAULT '[]',
@@ -186,17 +187,15 @@ class Database:
         self,
         telegram_id: int,
         language: str | None = None,
-        polling_interval_seconds: int | None = None,
         muted_categories: list[str] | None = None,
     ) -> dict:
+        """Update user settings. The polling interval is deliberately NOT
+        user-configurable: it is fully automatic (elastic 10s..5min)."""
         fields: list[str] = []
         params: list[Any] = []
         if language is not None:
             fields.append("language = ?")
             params.append(language)
-        if polling_interval_seconds is not None:
-            fields.append("polling_interval_seconds = ?")
-            params.append(polling_interval_seconds)
         if muted_categories is not None:
             fields.append("muted_categories = ?")
             params.append(json.dumps(muted_categories))

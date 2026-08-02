@@ -132,7 +132,6 @@ export const api = {
 
   updateSettings: (body: {
     language?: "ru" | "en";
-    polling_interval_seconds?: number;
     muted_categories?: string[];
   }) =>
     request("/api/settings", settingsResponseSchema, {

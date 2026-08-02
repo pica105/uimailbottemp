@@ -1,9 +1,10 @@
 """Background mail synchronization engine.
 
-Runs inside the same asyncio process. Every ~60 seconds it looks for
-accounts whose next_sync_at has passed, syncs each provider, and sends
-Telegram notifications for newly inserted messages. Failures are isolated
-per account and backed off exponentially.
+Runs inside the same asyncio process. Every SYNC_BASE_INTERVAL_SECONDS (5s)
+it looks for accounts whose next_sync_at has passed, syncs each provider,
+and sends Telegram notifications for newly inserted messages. Each account
+is scheduled with a fully automatic elastic interval (10s..5min). Failures
+are isolated per account and backed off exponentially.
 """
 
 from __future__ import annotations
@@ -140,23 +141,18 @@ async def _sync_account_with_retry(
 
 
 async def _adaptive_interval(db: Database, account: dict) -> int:
-    """Elastic per-account polling interval.
+    """Elastic per-account polling interval (fully automatic).
 
-    - fresh mail (newest message < 100s old)  → POLL_MIN (10s)
-    - grows proportionally with idle time:    gap // 10
-    - capped at POLL_MAX (5 min) or the user's manual setting (whichever
-      is lower)
+    - fresh mail (newest message < 200s old) → POLL_MIN (10s)
+    - grows proportionally with idle time:   gap // 10
+    - capped at POLL_MAX (5 min)
     - a new message resets it back to POLL_MIN automatically, because the
       gap collapses to ~0
 
-    When no mail has ever been imported the user's configured pace is
-    used as-is.
+    When no mail has ever been imported the maximum (5 min) is used.
+    The interval is NOT user-configurable by design.
     """
-    manual = int(account.get("polling_interval_seconds") or settings.POLL_MAX_SECONDS)
-    cap = max(
-        settings.POLL_MIN_SECONDS,
-        min(settings.POLL_MAX_SECONDS, manual),
-    )
+    cap = settings.POLL_MAX_SECONDS
     last_at = await db.get_last_message_at(account["id"])
     if last_at is None:
         return cap
