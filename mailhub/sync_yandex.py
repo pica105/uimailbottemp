@@ -4,12 +4,15 @@ Tracks the last synced UID per account; fetches only newer messages.
 Message bodies are parsed with the stdlib email module, then classified
 with classifier.py heuristics.
 
-IMAP response notes: ``uid("fetch", ...)`` returns one bytes element per
-fetched message of the form::
+IMAP response notes (aioimaplib 2.0.1): ``uid("fetch", ...)`` returns the
+response *split* into several elements per fetched message::
 
-    b"1 (UID 123 BODY[] {456}\\r\\n<raw rfc822 message>...)"
+    b"1 FETCH (UID 123 BODY[] {456}"   <- header line (bytes)
+    bytearray(b"<raw rfc822 message>") <- literal body (bytearray)
+    b")"                                <- closing paren
 
-We strip the response prefix and trailing parenthesis before parsing.
+We walk the response lines, pairing each ``FETCH (UID ...`` header with the
+literal that follows it.
 """
 
 from __future__ import annotations
@@ -35,8 +38,9 @@ IMAP_HOST = "imap.yandex.ru"
 IMAP_PORT = 993
 FETCH_BATCH = 50
 
-# Matches the aioimaplib fetch response prefix: "1 (UID 123 BODY[] {456}\r\n"
-_FETCH_PREFIX_RE = re.compile(rb"^\d+ \(UID \d+ BODY\[\] \{\d+\}\r?\n")
+# Matches the aioimaplib 2.x fetch response header:
+#   b"1 FETCH (UID 123 BODY[] {456}"
+_FETCH_HEADER_RE = re.compile(rb"^\d+ FETCH \(UID (\d+) BODY\[\] \{(\d+)\}$")
 
 
 class YandexApiError(Exception):
@@ -90,17 +94,6 @@ async def _connect(account: dict) -> aioimaplib.IMAP4_SSL:
     return client
 
 
-def _extract_rfc822(line: bytes) -> bytes | None:
-    """Strip the aioimaplib fetch prefix/trailing paren from a message line."""
-    m = _FETCH_PREFIX_RE.match(line)
-    if m:
-        content = line[m.end():]
-        if content.endswith(b")"):
-            content = content[:-1]
-        return content
-    return None
-
-
 async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, bytes]]:
     """Fetch messages with UID >= start_uid. Returns (uid, parsed msg, raw)."""
     resp = await client.uid_search("ALL")
@@ -121,18 +114,23 @@ async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, by
     raw = resp.lines
 
     results: list[tuple[int, Message, bytes]] = []
-    # aioimaplib returns one line per message: b"<seq> (UID <uid> BODY[] {n}\r\n<msg>)"
-    for line in raw:
+    # Walk the split response: each message is a header line followed by the
+    # literal (bytearray) body and a closing paren line.
+    i = 0
+    while i < len(raw):
+        line = raw[i]
+        i += 1
         if not isinstance(line, bytes):
             continue
-        content = _extract_rfc822(line)
-        if content is None:
-            continue
-        # Parse the UID back out of the response line prefix.
-        m = re.search(rb"\(UID (\d+)", line)
-        if not m:
+        m = _FETCH_HEADER_RE.match(line)
+        if m is None:
             continue
         uid = int(m.group(1))
+        if i >= len(raw) or not isinstance(raw[i], (bytes, bytearray)):
+            logger.warning("Skipping IMAP message (uid %s): missing literal", uid)
+            continue
+        content = bytes(raw[i])
+        i += 1
         try:
             msg = email.message_from_bytes(content)
         except Exception:  # noqa: BLE001 - skip malformed message
