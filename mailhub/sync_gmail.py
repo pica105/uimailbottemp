@@ -265,13 +265,33 @@ async def sync_account(
 
         if new_history_id:
             await db.set_checkpoint(account["id"], new_history_id)
-        await db.schedule_next_sync(
-            account["id"], account.get("polling_interval_seconds") or 300
-        )
         return {"new": new_count, "total": len(messages)}
     finally:
         if own_session:
             await session.close()
+
+
+async def mark_message_read(account: dict, provider_message_id: str) -> None:
+    """Remove the UNREAD label on Gmail (messages.modify).
+
+    Requires the ``gmail.modify`` OAuth scope; raises GmailApiError when
+    the token lacks permission (e.g. old ``readonly`` tokens) — callers
+    treat this as best-effort and keep the local read state anyway.
+    """
+    access_token = decrypt(account["encrypted_access_token"])
+    url = f"{GMAIL_API}/messages/{provider_message_id}/modify"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"removeLabelIds": ["UNREAD"]},
+        ) as resp:
+            if resp.status == 200:
+                return
+            body = await resp.text()
+            raise GmailApiError(
+                f"mark read {provider_message_id} -> {resp.status}: {body[:200]}"
+            )
 
 
 async def refresh_and_update_account(db: Database, account: dict) -> dict | None:

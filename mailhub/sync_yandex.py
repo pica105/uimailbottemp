@@ -251,6 +251,24 @@ def _message_to_record(uid: int, msg: Message) -> dict | None:
     }
 
 
+async def mark_message_read(account: dict, provider_message_id: str) -> None:
+    """Set the \\Seen flag on a Yandex message via IMAP STORE."""
+    if not provider_message_id.startswith("yandex-"):
+        raise YandexApiError(f"Unexpected yandex message id: {provider_message_id!r}")
+    uid = provider_message_id.split("-", 1)[1]
+    client = await _connect(account)
+    try:
+        await client.select("INBOX")
+        resp = await client.uid("store", uid, "+FLAGS", r"(\Seen)")
+        if resp.result != "OK":
+            raise YandexApiError(f"STORE \\Seen failed for uid {uid}: {resp.lines}")
+    finally:
+        try:
+            await client.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def sync_account(db: Database, account: dict) -> dict:
     """Sync a single Yandex account. Returns {'new': n, 'total': n}."""
     client = await _connect(account)
@@ -271,8 +289,6 @@ async def sync_account(db: Database, account: dict) -> dict:
             new_count += 1 if inserted else 0
 
         await db.set_checkpoint(account["id"], str(max_uid))
-        interval = account.get("polling_interval_seconds") or 300
-        await db.schedule_next_sync(account["id"], interval)
         return {"new": new_count, "total": len(fetched)}
     finally:
         try:

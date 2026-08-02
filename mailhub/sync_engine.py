@@ -82,11 +82,12 @@ async def _sync_account_with_retry(
     session: aiohttp.ClientSession,
     *,
     retried: bool = False,
-) -> None:
+) -> bool:
     """Sync one account; on auth failure refresh tokens and retry once.
 
     ``retried`` guards against infinite refresh-retry loops when a fresh
-    token is still rejected (e.g. IMAP disabled server-side).
+    token is still rejected (e.g. IMAP disabled server-side). Returns True
+    on success so the caller can schedule the next (elastic) check.
     """
     try:
         result = await _sync_one_account(db, account, session)
@@ -95,6 +96,7 @@ async def _sync_account_with_retry(
                 "Synced %s (%s): %d new of %d",
                 account["provider"], account["email"], result["new"], result["total"],
             )
+        return True
     except sync_gmail.GmailApiError as exc:
         if "unauthorized" in str(exc) and not retried:
             updated = await _refresh_tokens(db, account)
@@ -104,10 +106,13 @@ async def _sync_account_with_retry(
                 # Retry once with the fresh token, keeping the joined user
                 # fields (language, interval, muted categories) intact.
                 updated = {**account, **updated}
-                await _sync_account_with_retry(db, bot, updated, session, retried=True)
-            return
+                return await _sync_account_with_retry(
+                    db, bot, updated, session, retried=True
+                )
+            return False
         await db.increment_error(account["id"])
         logger.error("Sync failed for %s: %s", account["email"], exc)
+        return False
     except sync_yandex.YandexAuthError as exc:
         # Yandex rejects the access token (e.g. issued before IMAP access
         # was enabled). Refresh once and retry; deactivate on failure.
@@ -121,13 +126,42 @@ async def _sync_account_with_retry(
                 await _deactivate_and_notify(db, bot, account)
             else:
                 updated = {**account, **updated}
-                await _sync_account_with_retry(db, bot, updated, session, retried=True)
-            return
+                return await _sync_account_with_retry(
+                    db, bot, updated, session, retried=True
+                )
+            return False
         await db.increment_error(account["id"])
         logger.error("Sync failed for %s: %s", account["email"], exc)
+        return False
     except Exception as exc:  # noqa: BLE001 - per-account isolation
         await db.increment_error(account["id"])
         logger.error("Sync failed for %s: %s", account["email"], exc)
+        return False
+
+
+async def _adaptive_interval(db: Database, account: dict) -> int:
+    """Elastic per-account polling interval.
+
+    - fresh mail (newest message < 100s old)  → POLL_MIN (10s)
+    - grows proportionally with idle time:    gap // 10
+    - capped at POLL_MAX (5 min) or the user's manual setting (whichever
+      is lower)
+    - a new message resets it back to POLL_MIN automatically, because the
+      gap collapses to ~0
+
+    When no mail has ever been imported the user's configured pace is
+    used as-is.
+    """
+    manual = int(account.get("polling_interval_seconds") or settings.POLL_MAX_SECONDS)
+    cap = max(
+        settings.POLL_MIN_SECONDS,
+        min(settings.POLL_MAX_SECONDS, manual),
+    )
+    last_at = await db.get_last_message_at(account["id"])
+    if last_at is None:
+        return cap
+    gap = max(0, int(time.time()) - int(last_at))
+    return max(settings.POLL_MIN_SECONDS, min(cap, gap // 10))
 
 
 async def _notify_new_messages(
@@ -176,10 +210,15 @@ async def sync_loop(db: Database, bot: Bot, stop_event: asyncio.Event) -> None:
                     next_sync = account.get("next_sync_at")
                     if next_sync is None or int(next_sync) <= now:
                         was_empty = await db.get_message_count(account["id"]) == 0
-                        await _sync_account_with_retry(db, bot, account, session)
+                        ok = await _sync_account_with_retry(db, bot, account, session)
                         await _notify_new_messages(
                             db, bot, account, skip_initial=was_empty
                         )
+                        if ok:
+                            # The engine owns scheduling: poll fast while
+                            # mail is fresh, back off while it is idle.
+                            interval = await _adaptive_interval(db, account)
+                            await db.schedule_next_sync(account["id"], interval)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - engine must keep running

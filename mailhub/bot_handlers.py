@@ -26,6 +26,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .config import settings
 from .database import Database
+from .mark_read import spawn_mark_read
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +134,9 @@ def build_oauth_url(provider: str, state: str) -> str:
             "https://accounts.google.com/o/oauth2/v2/auth"
             f"?client_id={settings.GOOGLE_CLIENT_ID}"
             "&response_type=code"
-            "&scope=https://www.googleapis.com/auth/gmail.readonly"
-            "%20https://www.googleapis.com/auth/gmail.labels"
+            # gmail.modify is needed to remove the UNREAD label when the
+            # user marks a message read (readonly cannot write).
+            "&scope=https://www.googleapis.com/auth/gmail.modify"
             "&access_type=offline&prompt=consent"
             f"&redirect_uri={redirect_uri}"
             f"&state={state}"
@@ -340,7 +342,12 @@ def register_handlers(router: Router, db: Database) -> None:
     @router.callback_query(F.data.startswith("msg:read:"))
     async def on_msg_read(call: CallbackQuery) -> None:
         message_id = int(call.data.split(":")[2])
+        msg = await db.get_message(message_id)
+        if msg is None:
+            await call.answer(i18n.t("en", "error_generic"))
+            return
         await db.mark_read(message_id)
+        spawn_mark_read(db, msg["account_id"], msg["provider_message_id"])
         user = await db.get_user(call.from_user.id)
         lang = (user or {}).get("language", "en")
         await call.answer(i18n.t(lang, "marked_read"))

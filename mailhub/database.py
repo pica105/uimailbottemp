@@ -23,8 +23,9 @@ CREATE TABLE IF NOT EXISTS users (
     first_name TEXT,
     last_name TEXT,
     language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('ru', 'en')),
+    -- bounds mirror config.POLL_MIN_SECONDS / SETTINGS_MAX_INTERVAL_SECONDS
     polling_interval_seconds INTEGER NOT NULL DEFAULT 300
-        CHECK(polling_interval_seconds BETWEEN 5 AND 1800),
+        CHECK(polling_interval_seconds BETWEEN 10 AND 1800),
     muted_categories TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -387,6 +388,19 @@ class Database:
             (account_id,),
         )
         return int((row or {}).get("n", 0))
+
+    async def get_last_message_at(self, account_id: int) -> int | None:
+        """Timestamp of the newest cached message, or None when empty.
+
+        Drives the elastic polling: the further in the past the newest
+        message is, the longer the engine waits before the next check.
+        """
+        row = await self._fetchone(
+            "SELECT MAX(received_at) AS last_at FROM messages_cache WHERE account_id = ?",
+            (account_id,),
+        )
+        last_at = (row or {}).get("last_at")
+        return int(last_at) if last_at is not None else None
 
     async def get_unnotified_messages(self, account_id: int, limit: int = 10) -> list[dict]:
         """Messages that have not been notified yet, oldest first.

@@ -31,6 +31,7 @@ from .crypto import encrypt
 from .database import Database
 from . import sync_gmail
 from . import sync_yandex
+from .mark_read import spawn_mark_read
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +336,9 @@ async def api_mark_read(request: web.Request) -> web.Response:
     if account is None or account["user_id"] != telegram_id:
         return web.json_response({"error": "not_found"}, status=404)
     await db.mark_read(message_id)
+    # Push the read state to the real mailbox in the background; the API
+    # responds instantly even if the provider call takes a second.
+    spawn_mark_read(db, msg["account_id"], msg["provider_message_id"])
     return web.json_response({"ok": True})
 
 
@@ -366,7 +370,11 @@ async def api_update_settings(request: web.Request) -> web.Response:
             polling_interval = int(body["polling_interval_seconds"])
         except (TypeError, ValueError):
             return web.json_response({"error": "invalid_interval"}, status=400)
-        if not (5 <= polling_interval <= 1800):
+        if not (
+            settings.POLL_MIN_SECONDS
+            <= polling_interval
+            <= settings.SETTINGS_MAX_INTERVAL_SECONDS
+        ):
             return web.json_response({"error": "invalid_interval"}, status=400)
 
     muted = body.get("muted_categories")
