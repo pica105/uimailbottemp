@@ -76,6 +76,11 @@ export function MessageDetail({ id }: { id: number }) {
         </CardContent>
       </Card>
 
+      {markRead.isError && (
+        <p className="py-2 text-center text-sm text-destructive">
+          {t("message.mark_read_error")}
+        </p>
+      )}
       {!message.is_read && (
         <Button
           className="w-full"
@@ -88,7 +93,7 @@ export function MessageDetail({ id }: { id: number }) {
           {t("message.mark_read")}
         </Button>
       )}
-      {message.is_read && (
+      {message.is_read && !markRead.isError && (
         <p className="text-center text-sm text-muted-foreground">✓ {t("message.read")}</p>
       )}
     </motion.div>

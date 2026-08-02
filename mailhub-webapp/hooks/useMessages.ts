@@ -1,8 +1,11 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { z } from "zod";
+import { api, messageResponseSchema } from "@/lib/api";
 import type { CategoryFilter } from "@/types";
+
+type MessageResponse = z.infer<typeof messageResponseSchema>;
 
 export function useAccounts() {
   return useQuery({
@@ -43,7 +46,21 @@ export function useMarkRead() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.markRead,
-    onSuccess: (_data, messageId) => {
+    // Optimistic update: flip is_read instantly, revert on error.
+    onMutate: async (messageId: number) => {
+      await qc.cancelQueries({ queryKey: ["message", messageId] });
+      const previous = qc.getQueryData<MessageResponse>(["message", messageId]);
+      qc.setQueryData<MessageResponse>(["message", messageId], (old) =>
+        old ? { ...old, message: { ...old.message, is_read: true } } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, messageId, ctx) => {
+      if (ctx?.previous) {
+        qc.setQueryData<MessageResponse>(["message", messageId], ctx.previous);
+      }
+    },
+    onSettled: (_data, _err, messageId) => {
       qc.invalidateQueries({ queryKey: ["messages"] });
       qc.invalidateQueries({ queryKey: ["message", messageId] });
     },

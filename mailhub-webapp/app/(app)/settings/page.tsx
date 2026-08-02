@@ -19,7 +19,7 @@ import { AccountsList } from "@/components/settings/AccountsList";
 
 const settingsSchema = z.object({
   language: z.enum(["ru", "en"]),
-  polling_interval_seconds: z.number().min(60).max(1800),
+  polling_interval_seconds: z.number().min(10).max(1800),
   muted_categories: z.array(z.enum(["promo", "spam", "other"])),
 });
 
