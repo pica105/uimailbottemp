@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_name TEXT,
     language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('ru', 'en')),
     polling_interval_seconds INTEGER NOT NULL DEFAULT 300
-        CHECK(polling_interval_seconds BETWEEN 60 AND 1800),
+        CHECK(polling_interval_seconds BETWEEN 5 AND 1800),
     muted_categories TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

@@ -366,7 +366,7 @@ async def api_update_settings(request: web.Request) -> web.Response:
             polling_interval = int(body["polling_interval_seconds"])
         except (TypeError, ValueError):
             return web.json_response({"error": "invalid_interval"}, status=400)
-        if not (60 <= polling_interval <= 1800):
+        if not (5 <= polling_interval <= 1800):
             return web.json_response({"error": "invalid_interval"}, status=400)
 
     muted = body.get("muted_categories")

@@ -52,7 +52,8 @@ class Settings(BaseSettings):
     DB_PATH: Path = BASE_DIR / "mailhub.db"
 
     # --- Sync engine ----------------------------------------------------
-    SYNC_BASE_INTERVAL_SECONDS: int = 60
+    # Engine loop tick: how often the sync loop wakes up and checks accounts.
+    SYNC_BASE_INTERVAL_SECONDS: int = 5
     SYNC_ERROR_MAX_BACKOFF_SECONDS: int = 3600
     OAUTH_STATE_TTL_SECONDS: int = 600
     GMAIL_HISTORY_PAGE_SIZE: int = 100
