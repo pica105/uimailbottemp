@@ -149,7 +149,8 @@ async def list_messages(
                     unique.append(m)
             return unique[:max_results], new_history_id
 
-        # First sync: latest messages from INBOX.
+        # First sync: latest messages from INBOX. messages.list does not
+        # return historyId — it comes from users.getProfile instead.
         data = await _get(
             session,
             access_token,
@@ -157,7 +158,8 @@ async def list_messages(
             {"labelIds": "INBOX", "maxResults": str(max_results)},
         )
         messages = data.get("messages", [])
-        return messages, data.get("historyId", "")
+        profile = await _get(session, access_token, f"{GMAIL_API}/profile")
+        return messages, profile.get("historyId", "")
 
 
 async def fetch_message_full(access_token: str, message_id: str) -> dict:
