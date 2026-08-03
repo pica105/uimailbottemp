@@ -28,7 +28,7 @@ from aiohttp import web
 from .bot_handlers import i18n
 from .config import settings
 from .crypto import encrypt
-from .database import Database
+from .database import Database, SUPPRESSED_NOTIFICATION_CATEGORIES
 from . import sync_gmail
 from . import sync_yandex
 from .mark_read import spawn_mark_read
@@ -304,7 +304,9 @@ async def api_delete_account(request: web.Request) -> web.Response:
     account = await db.get_account(account_id)
     if account is None or account["user_id"] != telegram_id:
         return web.json_response({"error": "not_found"}, status=404)
-    await db.delete_account(account_id)
+    deleted = await db.delete_account(account_id, telegram_id)
+    if not deleted:
+        return web.json_response({"error": "not_found"}, status=404)
     return web.json_response({"ok": True})
 
 
@@ -320,12 +322,18 @@ async def api_account_messages(request: web.Request) -> web.Response:
 
     category = request.query.get("category") or None
     try:
-        limit = max(1, min(int(request.query.get("limit", "50")), 100))
+        limit = max(1, min(int(request.query.get("limit", "20")), 100))
         offset = max(0, int(request.query.get("offset", "0")))
     except (TypeError, ValueError):
         return web.json_response({"error": "invalid_pagination"}, status=400)
-    messages = await db.get_messages(account_id, category=category, limit=limit, offset=offset)
-    return web.json_response({"messages": [_public_message(m) for m in messages]})
+    messages = await db.get_messages(
+        account_id, category=category, limit=limit + 1, offset=offset
+    )
+    has_more = len(messages) > limit
+    return web.json_response({
+        "messages": [_public_message(m) for m in messages[:limit]],
+        "has_more": has_more,
+    })
 
 
 async def api_message(request: web.Request) -> web.Response:
@@ -335,7 +343,7 @@ async def api_message(request: web.Request) -> web.Response:
     if message_id is None:
         return web.json_response({"error": "not_found"}, status=404)
     msg = await db.get_message(message_id)
-    if msg is None:
+    if msg is None or msg["category"] in SUPPRESSED_NOTIFICATION_CATEGORIES:
         return web.json_response({"error": "not_found"}, status=404)
     account = await db.get_account(msg["account_id"])
     if account is None or account["user_id"] != telegram_id:
@@ -350,7 +358,7 @@ async def api_mark_read(request: web.Request) -> web.Response:
     if message_id is None:
         return web.json_response({"error": "not_found"}, status=404)
     msg = await db.get_message(message_id)
-    if msg is None:
+    if msg is None or msg["category"] in SUPPRESSED_NOTIFICATION_CATEGORIES:
         return web.json_response({"error": "not_found"}, status=404)
     account = await db.get_account(msg["account_id"])
     if account is None or account["user_id"] != telegram_id:
@@ -391,7 +399,7 @@ async def api_update_settings(request: web.Request) -> web.Response:
     if muted is not None and not isinstance(muted, list):
         return web.json_response({"error": "invalid_muted"}, status=400)
     if muted is not None:
-        valid = {"promo", "spam", "other"}
+        valid = {"promo", "spam", "social", "other"}
         if any(c not in valid for c in muted):
             return web.json_response({"error": "invalid_muted"}, status=400)
 

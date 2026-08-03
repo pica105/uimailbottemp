@@ -59,6 +59,8 @@ test("inbox shell renders and navigates to settings", async ({ page }) => {
   await expect(page.getByText("MailHub").first()).toBeVisible();
   await expect(page.getByText("All").first()).toBeVisible();
   await expect(page.getByText("Important").first()).toBeVisible();
+  await expect(page.getByText("Social").first()).toBeVisible();
+  await expect(page.getByText("Other").first()).toBeVisible();
 
   await page.getByText("Settings", { exact: true }).click();
   await expect(page).toHaveURL(/\/settings$/);

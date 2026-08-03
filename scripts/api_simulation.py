@@ -85,6 +85,13 @@ async def seed(db: Database) -> None:
             subject=subj, snippet=snippet, body_text=snippet,
             category=cat, received_at=recv,
         )
+    for index in range(22):
+        await db.upsert_message(
+            gmail["id"], f"gmail-important-{index}", sender_name="Colleague",
+            sender_email="colleague@example.com", subject=f"Recent update {index}",
+            snippet="Fresh message", body_text="Fresh message",
+            category="important", received_at=2000 + index,
+        )
 
 
 async def main() -> None:
@@ -134,13 +141,35 @@ async def main() -> None:
         # 3. messages with category filter
         gmail_id = body["accounts"][0]["id"]
         status, body = await get(f"/api/accounts/{gmail_id}/messages?category=important", headers)
-        ok = status == 200 and len(body["messages"]) == 1 and body["messages"][0]["subject"] == "Meeting tomorrow"
-        checks.append(("messages(important)", ok, status, body))
+        ok = (
+            status == 200
+            and len(body["messages"]) == 20
+            and body["messages"][0]["subject"] == "Recent update 21"
+            and body["has_more"] is True
+        )
+        checks.append(("messages(important) first page", ok, status, body))
 
         # 4. all messages
         status, body = await get(f"/api/accounts/{gmail_id}/messages", headers)
-        ok = status == 200 and len(body["messages"]) == 2
-        checks.append(("messages(all)", ok, status, body))
+        ok = (
+            status == 200
+            and len(body["messages"]) == 20
+            and body["has_more"] is True
+            and all(m["category"] not in {"promo", "spam"} for m in body["messages"])
+        )
+        checks.append(("messages(all) hides promo/spam", ok, status, body))
+
+        status, body = await get(
+            f"/api/accounts/{gmail_id}/messages?category=important&limit=20&offset=20",
+            headers,
+        )
+        ok = (
+            status == 200
+            and len(body["messages"]) == 3
+            and body["has_more"] is False
+            and len({m["id"] for m in body["messages"]}) == 3
+        )
+        checks.append(("messages(important) second page", ok, status, body))
 
         # 5. single message
         msg_id = body["messages"][0]["id"]

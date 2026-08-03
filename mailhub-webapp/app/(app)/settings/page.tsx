@@ -19,7 +19,7 @@ import { AccountsList } from "@/components/settings/AccountsList";
 
 const settingsSchema = z.object({
   language: z.enum(["ru", "en"]),
-  muted_categories: z.array(z.enum(["promo", "spam", "other"])),
+  muted_categories: z.array(z.enum(["promo", "spam", "social", "other"])),
 });
 
 type SettingsForm = z.infer<typeof settingsSchema>;

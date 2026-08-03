@@ -10,8 +10,8 @@ const en: Dict = {
   "nav.settings": "Settings",
   "tab.all": "All",
   "tab.important": "Important",
-  "tab.promo": "Promo",
-  "tab.spam": "Spam",
+  "tab.social": "Social",
+  "tab.other": "Other",
   "empty.title": "No messages yet",
   "empty.description": "When new mail arrives, it will show up here. Connect an account to get started.",
   "empty.no_accounts": "No accounts connected",
@@ -49,11 +49,14 @@ const en: Dict = {
   "cat.important": "Important",
   "cat.promo": "Promo",
   "cat.spam": "Spam",
+  "cat.social": "Social",
   "cat.other": "Other",
   "error.reopen": "Session expired. Reopen from Telegram.",
   "error.load": "Couldn't load data.",
+  "error.delete_account": "Couldn't disconnect this account. Try again.",
   "retry": "Try again",
   "loading.messages": "Loading mail…",
+  "messages.load_more": "Load more",
 };
 
 const ru: Dict = {
@@ -63,8 +66,8 @@ const ru: Dict = {
   "nav.settings": "Настройки",
   "tab.all": "Все",
   "tab.important": "Важное",
-  "tab.promo": "Реклама",
-  "tab.spam": "Спам",
+  "tab.social": "Соцсети",
+  "tab.other": "Другое",
   "empty.title": "Пока нет писем",
   "empty.description":
     "Когда придёт новое письмо, оно появится здесь. Подключите аккаунт, чтобы начать.",
@@ -103,11 +106,14 @@ const ru: Dict = {
   "cat.important": "Важное",
   "cat.promo": "Реклама",
   "cat.spam": "Спам",
+  "cat.social": "Соцсети",
   "cat.other": "Другое",
   "error.reopen": "Сессия истекла. Откройте из Telegram.",
   "error.load": "Не удалось загрузить данные.",
+  "error.delete_account": "Не удалось отключить аккаунт. Попробуйте ещё раз.",
   "retry": "Повторить",
   "loading.messages": "Загружаем почту…",
+  "messages.load_more": "Загрузить ещё",
 };
 
 const dictionaries: Record<Language, Dict> = { en, ru };

@@ -27,7 +27,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_CATEGORY_MAP = {
     "CATEGORY_PERSONAL": "important",
     "CATEGORY_PROMOTIONS": "promo",
-    "CATEGORY_SOCIAL": "promo",
+    "CATEGORY_SOCIAL": "social",
     "CATEGORY_UPDATES": "other",
     "CATEGORY_FORUMS": "other",
 }
@@ -35,6 +35,10 @@ GMAIL_CATEGORY_MAP = {
 
 class GmailApiError(Exception):
     """Raised when the Gmail API returns an unexpected status."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _now_ts() -> int:
@@ -90,10 +94,10 @@ async def _get(
     headers = {"Authorization": f"Bearer {access_token}"}
     async with session.get(url, params=params, headers=headers) as resp:
         if resp.status == 401:
-            raise GmailApiError("unauthorized")
+            raise GmailApiError("unauthorized", resp.status)
         if resp.status != 200:
             body = await resp.text()
-            raise GmailApiError(f"GET {url} -> {resp.status}: {body[:300]}")
+            raise GmailApiError(f"GET {url} -> {resp.status}: {body[:300]}", resp.status)
         return await resp.json()
 
 
@@ -114,7 +118,11 @@ def _parse_internal_date(internal_date: str | None, message: dict) -> int:
 
 
 async def list_messages(
-    access_token: str, history_id: str | None = None, max_results: int = 50
+    access_token: str,
+    history_id: str | None = None,
+    max_results: int = 50,
+    *,
+    query: str | None = None,
 ) -> tuple[list[dict], str]:
     """Return (messages, new_history_id).
 
@@ -123,39 +131,41 @@ async def list_messages(
     """
     async with aiohttp.ClientSession() as session:
         if history_id:
-            data = await _get(
-                session,
-                access_token,
-                f"{GMAIL_API}/history",
-                {
+            messages: list[dict] = []
+            seen: set[str] = set()
+            new_history_id = history_id
+            page_token: str | None = None
+            while True:
+                params = {
                     "startHistoryId": history_id,
                     "maxResults": str(settings.GMAIL_HISTORY_PAGE_SIZE),
                     "labelId": "INBOX",
                     "historyTypes": "messageAdded",
-                },
-            )
-            history = data.get("history", [])
-            new_history_id = data.get("historyId") or history_id
-            messages: list[dict] = []
-            for item in history:
-                for msg in item.get("messagesAdded", []):
-                    messages.append(msg["message"])
-            # history may return duplicates across pages; dedupe by id.
-            seen: set[str] = set()
-            unique: list[dict] = []
-            for m in messages:
-                if m["id"] not in seen:
-                    seen.add(m["id"])
-                    unique.append(m)
-            return unique[:max_results], new_history_id
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                data = await _get(
+                    session, access_token, f"{GMAIL_API}/history", params
+                )
+                new_history_id = data.get("historyId") or new_history_id
+                for item in data.get("history", []):
+                    for msg in item.get("messagesAdded", []):
+                        candidate = msg["message"]
+                        if candidate["id"] not in seen:
+                            seen.add(candidate["id"])
+                            messages.append(candidate)
+                page_token = data.get("nextPageToken")
+                if not page_token or len(messages) >= max_results:
+                    break
+            return messages[:max_results], new_history_id
 
         # First sync: latest messages from INBOX. messages.list does not
         # return historyId — it comes from users.getProfile instead.
+        params = {"labelIds": "INBOX", "maxResults": str(max_results)}
+        if query:
+            params["q"] = query
         data = await _get(
-            session,
-            access_token,
-            f"{GMAIL_API}/messages",
-            {"labelIds": "INBOX", "maxResults": str(max_results)},
+            session, access_token, f"{GMAIL_API}/messages", params
         )
         messages = data.get("messages", [])
         profile = await _get(session, access_token, f"{GMAIL_API}/profile")
@@ -225,6 +235,7 @@ def message_to_record(message: dict) -> dict:
         "body_text": _decode_body(payload),
         "category": category,
         "received_at": received_at,
+        "is_read": "UNREAD" not in labels,
     }
 
 
@@ -253,18 +264,55 @@ async def sync_account(
     own_session = session is None
     session = session or aiohttp.ClientSession()
     try:
-        messages, new_history_id = await list_messages(
-            access_token, account["last_checkpoint"] or None, max_results=50
-        )
+        history_id = account["last_checkpoint"] or None
+        bootstrap = not bool(account.get("unread_bootstrap_done"))
+        try:
+            messages, new_history_id = await list_messages(
+                access_token,
+                history_id,
+                max_results=settings.GMAIL_INITIAL_PAGE_SIZE,
+            )
+        except GmailApiError as exc:
+            # Gmail expires old history ids. Rebootstrap instead of backing
+            # off for an hour and leaving the Mini App stuck on stale mail.
+            if history_id and exc.status == 404:
+                logger.info("Gmail history expired for account %s; rebootstrap", account["id"])
+                messages, new_history_id = await list_messages(
+                    access_token, None, max_results=settings.GMAIL_INITIAL_PAGE_SIZE
+                )
+                bootstrap = True
+            else:
+                raise
+
+        if bootstrap:
+            unread, _ = await list_messages(
+                access_token,
+                None,
+                max_results=settings.GMAIL_UNREAD_PAGE_SIZE,
+                query="is:unread in:inbox",
+            )
+            by_id = {message["id"]: message for message in messages}
+            by_id.update({message["id"]: message for message in unread})
+            messages = list(by_id.values())
+
         new_count = 0
         for msg in messages:
             full = await fetch_message_full(access_token, msg["id"])
             record = message_to_record(full)
             inserted = await db.upsert_message(account["id"], **record)
+            if not inserted:
+                cached = await db._fetchone(
+                    "SELECT id FROM messages_cache WHERE account_id = ? AND provider_message_id = ?",
+                    (account["id"], record["provider_message_id"]),
+                )
+                if cached:
+                    await db.update_message_from_provider(cached["id"], **record)
             new_count += 1 if inserted else 0
 
         if new_history_id:
             await db.set_checkpoint(account["id"], new_history_id)
+        if bootstrap:
+            await db.mark_unread_bootstrap_done(account["id"])
         return {"new": new_count, "total": len(messages)}
     finally:
         if own_session:

@@ -74,6 +74,12 @@ export function AccountsList({ accounts }: Props) {
         ))}
       </div>
 
+      {deleteAccount.isError && (
+        <p className="text-sm text-destructive" role="alert">
+          {t("error.delete_account")}
+        </p>
+      )}
+
       <AlertDialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -85,9 +91,13 @@ export function AccountsList({ accounts }: Props) {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("settings.cancel")}</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (pending) deleteAccount.mutate(pending.id);
-                setPending(null);
+              onClick={(event) => {
+                event.preventDefault();
+                if (pending) {
+                  deleteAccount.mutate(pending.id, {
+                    onSettled: () => setPending(null),
+                  });
+                }
               }}
               disabled={deleteAccount.isPending}
             >

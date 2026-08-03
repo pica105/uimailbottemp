@@ -5,8 +5,8 @@ Read and manage Gmail and Yandex mailboxes from inside Telegram. The bot deliver
 ## Features
 
 - **OAuth connect** for Gmail and Yandex, one tap in the chat
-- **New-mail notifications** to Telegram, muted categories supported
-- **Mini App** (inside Telegram): inbox, category tabs (All / Important / Promo / Spam), message detail with body
+- **New-mail notifications** to Telegram; Promo and Spam are always suppressed, with optional muting for other categories
+- **Mini App** (inside Telegram): inbox, category tabs (All / Important / Social / Other), message detail with body and Load more pagination
 - **Mark-as-read** that syncs back to the real mailbox (Gmail `modify`, Yandex `\Seen`)
 - **Elastic polling** per account (fully automatic): 10 s right after new mail, grows with idle time, caps at 5 min. A new message resets it to 10 s
 - **RU / EN**, native Telegram theme (light and dark)
@@ -26,8 +26,8 @@ One Python process runs everything: the aiogram bot (long polling), the aiohttp 
 
 Sync details:
 
-- **Gmail** — REST only. First import: latest 50 messages. Then `users.history` incremental from the `historyId` obtained via `users.getProfile`. Mark-as-read removes the `UNREAD` label (`messages.modify`).
-- **Yandex** — IMAP over XOAUTH2 (`aioimaplib`, `imap.yandex.ru:993`). UID-based incremental search, newest-first batches of 50. Mark-as-read issues `STORE +FLAGS (\Seen)`.
+- **Gmail** — REST only. Bootstrap: latest 50 messages plus up to 50 latest unread messages (`is:unread in:inbox`). Then paginated `users.history` incremental sync; expired history IDs trigger a fresh bootstrap. Mark-as-read removes the `UNREAD` label (`messages.modify`).
+- **Yandex** — IMAP over XOAUTH2 (`aioimaplib`, `imap.yandex.ru:993`). UID-based incremental search plus one-time unread backfill, newest-first batches of 50. Mark-as-read issues `STORE +FLAGS (\Seen)`.
 - **Elastic interval** — `max(10 s, min(5 min, idle_seconds / 10))`, fully automatic per account (not user-configurable). Fresh mail → 10 s. Silent mailbox → grows toward the 5 min cap. Errors back off exponentially (`2^n × 60 s`, capped at 1 h).
 
 Frontend is a Next.js Mini App served from the same domain, authenticated by Telegram WebApp `initData` (HMAC-SHA256) on every API call.

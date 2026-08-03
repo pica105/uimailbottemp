@@ -1,9 +1,9 @@
 export type Language = "ru" | "en";
 
-export type Category = "important" | "promo" | "spam" | "other";
+export type Category = "important" | "promo" | "spam" | "social" | "other";
 export type CategoryFilter = "all" | Category;
-/** Categories that can be muted (important can never be muted). */
-export type MutedCategory = "promo" | "spam" | "other";
+/** Promo/spam are kept for legacy settings/cache compatibility but hidden. */
+export type MutedCategory = "promo" | "spam" | "social" | "other";
 
 export type Provider = "gmail" | "yandex";
 
@@ -41,6 +41,7 @@ export interface AccountsResponse {
 
 export interface MessagesResponse {
   messages: Message[];
+  has_more: boolean;
 }
 
 export interface MessageResponse {

@@ -90,7 +90,8 @@ FETCH_BATCH = 50
 
 # Matches the aioimaplib 2.x fetch response header:
 #   b"1 FETCH (UID 123 BODY[] {456}"
-_FETCH_HEADER_RE = re.compile(rb"^\d+ FETCH \(UID (\d+) BODY\[\] \{(\d+)\}$")
+_FETCH_UID_RE = re.compile(rb"\bUID\s+(\d+)\b")
+_FETCH_FLAGS_RE = re.compile(rb"\bFLAGS\s+\(([^)]*)\)")
 
 
 class YandexApiError(Exception):
@@ -145,9 +146,11 @@ async def _connect(account: dict) -> aioimaplib.IMAP4_SSL:
     return client
 
 
-async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, bytes]]:
-    """Fetch messages with UID >= start_uid. Returns (uid, parsed msg, raw)."""
-    resp = await client.uid_search("ALL")
+async def _fetch_messages(
+    client, start_uid: int, criteria: str = "ALL"
+) -> list[tuple[int, Message, bytes, bool]]:
+    """Fetch messages with UID >= start_uid, including provider read state."""
+    resp = await client.uid_search(criteria)
     if resp.result != "OK":
         raise YandexApiError(f"UID SEARCH failed: {resp.lines}")
     data = resp.lines
@@ -161,12 +164,12 @@ async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, by
         return []
 
     uid_set = ",".join(str(u) for u in pending)
-    resp = await client.uid("fetch", uid_set, "(UID BODY.PEEK[])")
+    resp = await client.uid("fetch", uid_set, "(UID FLAGS BODY.PEEK[])")
     if resp.result != "OK":
         raise YandexApiError(f"UID FETCH failed: {resp.lines}")
     raw = resp.lines
 
-    results: list[tuple[int, Message, bytes]] = []
+    results: list[tuple[int, Message, bytes, bool]] = []
     # Walk the split response: each message is a header line followed by the
     # literal (bytearray) body and a closing paren line.
     i = 0
@@ -175,10 +178,15 @@ async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, by
         i += 1
         if not isinstance(line, bytes):
             continue
-        m = _FETCH_HEADER_RE.match(line)
+        if b"BODY[" not in line and b"BODY.PEEK[" not in line:
+            continue
+        m = _FETCH_UID_RE.search(line)
         if m is None:
             continue
         uid = int(m.group(1))
+        flags_match = _FETCH_FLAGS_RE.search(line)
+        flags = flags_match.group(1) if flags_match else b""
+        is_read = b"\\Seen" in flags
         if i >= len(raw) or not isinstance(raw[i], (bytes, bytearray)):
             logger.warning("Skipping IMAP message (uid %s): missing literal", uid)
             continue
@@ -189,7 +197,7 @@ async def _fetch_messages(client, start_uid: int) -> list[tuple[int, Message, by
         except Exception:  # noqa: BLE001 - skip malformed message
             logger.warning("Skipping malformed IMAP message (uid %s)", uid)
             continue
-        results.append((uid, msg, content))
+        results.append((uid, msg, content, is_read))
     return results
 
 
@@ -275,20 +283,38 @@ async def sync_account(db: Database, account: dict) -> dict:
     try:
         await client.select("INBOX")
         start_uid = int(account.get("last_checkpoint") or 1)
-        fetched = await _fetch_messages(client, start_uid)
+        bootstrap = not bool(account.get("unread_bootstrap_done"))
+        fetched = await _fetch_messages(client, start_uid, "ALL")
+        if bootstrap:
+            # Existing accounts may have a stale checkpoint and only a few
+            # cached messages. Always backfill the newest unseen UIDs once.
+            unread = await _fetch_messages(client, 1, "UNSEEN")
+            by_uid = {item[0]: item for item in fetched}
+            by_uid.update({item[0]: item for item in unread})
+            fetched = list(by_uid.values())
 
         new_count = 0
         max_uid = start_uid
-        for uid, msg, _raw in fetched:
+        for uid, msg, _raw, is_read in fetched:
             if uid > max_uid:
                 max_uid = uid
             record = _message_to_record(uid, msg)
             if record is None:
                 continue
+            record["is_read"] = is_read
             inserted = await db.upsert_message(account["id"], **record)
+            if not inserted:
+                cached = await db._fetchone(
+                    "SELECT id FROM messages_cache WHERE account_id = ? AND provider_message_id = ?",
+                    (account["id"], record["provider_message_id"]),
+                )
+                if cached:
+                    await db.update_message_from_provider(cached["id"], **record)
             new_count += 1 if inserted else 0
 
         await db.set_checkpoint(account["id"], str(max_uid))
+        if bootstrap:
+            await db.mark_unread_bootstrap_done(account["id"])
         return {"new": new_count, "total": len(fetched)}
     finally:
         try:

@@ -10,8 +10,8 @@ import type { CategoryFilter } from "@/types";
 const TABS: { value: CategoryFilter; labelKey: string }[] = [
   { value: "all", labelKey: "tab.all" },
   { value: "important", labelKey: "tab.important" },
-  { value: "promo", labelKey: "tab.promo" },
-  { value: "spam", labelKey: "tab.spam" },
+  { value: "social", labelKey: "tab.social" },
+  { value: "other", labelKey: "tab.other" },
 ];
 
 export function CategoryTabs() {

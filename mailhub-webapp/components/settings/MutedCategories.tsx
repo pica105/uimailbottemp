@@ -12,8 +12,7 @@ interface Props {
 }
 
 const OPTIONS: { category: MutedCategory; labelKey: string }[] = [
-  { category: "promo", labelKey: "cat.promo" },
-  { category: "spam", labelKey: "cat.spam" },
+  { category: "social", labelKey: "cat.social" },
   { category: "other", labelKey: "cat.other" },
 ];
 

@@ -1,6 +1,11 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { z } from "zod";
 import { api, messageResponseSchema } from "@/lib/api";
 import { useTelegram } from "@/hooks/useTelegram";
@@ -20,12 +25,15 @@ export function useAccounts() {
 
 export function useMessages(accountId: number | null, category: CategoryFilter) {
   const { initData, userId } = useTelegram();
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["messages", userId, accountId, category],
-    queryFn: () => {
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => {
       if (accountId === null) throw new Error("No account selected");
-      return api.messages(accountId, category);
+      return api.messages(accountId, category, 20, pageParam);
     },
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.has_more ? allPages.length * 20 : undefined,
     enabled: accountId !== null && Boolean(initData),
   });
 }

@@ -12,7 +12,7 @@ from .config import settings
 
 
 def classify_yandex_message(headers: Message | dict) -> str:
-    """Classify an IMAP message into important/promo/spam/other.
+    """Classify an IMAP message into important/promo/spam/social/other.
 
     Accepts either an email.message.Message or a plain dict with
     'List-Unsubscribe', 'From', and 'Subject' keys.
@@ -26,12 +26,18 @@ def classify_yandex_message(headers: Message | dict) -> str:
         from_header = headers.get("From", "") or ""
         subject = headers.get("Subject", "") or ""
 
+    from_lower = from_header.lower()
+
+    # Social-network notifications get their own category even when the
+    # provider also adds List-Unsubscribe.
+    if any(domain in from_lower for domain in settings.SOCIAL_DOMAINS):
+        return "social"
+
     # Mailing lists and newsletters always carry List-Unsubscribe.
     if list_unsubscribe.strip():
         return "promo"
 
     # Domain blacklist (senders that are essentially always bulk).
-    from_lower = from_header.lower()
     if any(domain in from_lower for domain in settings.SPAM_DOMAINS):
         return "promo"
 

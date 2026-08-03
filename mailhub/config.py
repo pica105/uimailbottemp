@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     SYNC_ERROR_MAX_BACKOFF_SECONDS: int = 3600
     OAUTH_STATE_TTL_SECONDS: int = 600
     GMAIL_HISTORY_PAGE_SIZE: int = 100
+    GMAIL_INITIAL_PAGE_SIZE: int = 50
+    GMAIL_UNREAD_PAGE_SIZE: int = 50
 
     # --- Elastic polling ------------------------------------------------
     # Fully automatic per-account interval (not user-configurable):
@@ -76,6 +78,17 @@ class Settings(BaseSettings):
         "donotreply@",
         "info@",
         "promo@",
+    )
+    SOCIAL_DOMAINS: tuple[str, ...] = (
+        "facebook.",
+        "instagram.",
+        "linkedin.",
+        "twitter.",
+        "x.com",
+        "telegram.",
+        "vk.com",
+        "ok.ru",
+        "tiktok.",
     )
     SPAM_KEYWORDS: tuple[str, ...] = (
         "unsubscribe",

@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS mail_accounts (
     is_active BOOLEAN NOT NULL DEFAULT 1,
     sync_error_count INTEGER NOT NULL DEFAULT 0,
     next_sync_at TIMESTAMP,
+    -- One-time provider-side backfill of the latest unread messages.
+    unread_bootstrap_done BOOLEAN NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, email)
 );
@@ -58,7 +60,7 @@ CREATE TABLE IF NOT EXISTS messages_cache (
     subject TEXT,
     snippet TEXT,
     body_text TEXT,
-    category TEXT NOT NULL CHECK(category IN ('important', 'promo', 'spam', 'other')),
+    category TEXT NOT NULL CHECK(category IN ('important', 'promo', 'spam', 'social', 'other')),
     received_at TIMESTAMP NOT NULL,
     is_read BOOLEAN NOT NULL DEFAULT 0,
     notified_at TIMESTAMP,
@@ -77,7 +79,11 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 );
 """
 
-CATEGORIES = ("important", "promo", "spam", "other")
+CATEGORIES = ("important", "promo", "spam", "social", "other")
+
+# Promo and spam remain stored for backwards-compatible cache rows, but they
+# are never shown in the Mini App or sent as Telegram notifications.
+SUPPRESSED_NOTIFICATION_CATEGORIES = frozenset({"promo", "spam"})
 
 
 class Database:
@@ -95,6 +101,56 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         await self._conn.execute("PRAGMA foreign_keys = ON")
         await self._conn.executescript(SCHEMA)
+        # Existing VPS databases used a CHECK constraint without `social`.
+        # Rebuild only that cache table in-place, preserving all cached rows.
+        table_sql = await self._fetchone(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_cache'"
+        )
+        if table_sql and "'social'" not in (table_sql["sql"] or ""):
+            await self._conn.execute("PRAGMA foreign_keys = OFF")
+            await self._conn.execute("ALTER TABLE messages_cache RENAME TO messages_cache_legacy")
+            await self._conn.execute(
+                """CREATE TABLE messages_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE,
+                    provider_message_id TEXT NOT NULL,
+                    sender_name TEXT,
+                    sender_email TEXT,
+                    subject TEXT,
+                    snippet TEXT,
+                    body_text TEXT,
+                    category TEXT NOT NULL CHECK(category IN ('important', 'promo', 'spam', 'social', 'other')),
+                    received_at TIMESTAMP NOT NULL,
+                    is_read BOOLEAN NOT NULL DEFAULT 0,
+                    notified_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(account_id, provider_message_id)
+                )"""
+            )
+            await self._conn.execute(
+                """INSERT INTO messages_cache
+                   (id, account_id, provider_message_id, sender_name, sender_email,
+                    subject, snippet, body_text, category, received_at, is_read,
+                    notified_at, created_at)
+                   SELECT id, account_id, provider_message_id, sender_name, sender_email,
+                          subject, snippet, body_text, category, received_at, is_read,
+                          notified_at, created_at
+                   FROM messages_cache_legacy"""
+            )
+            await self._conn.execute("DROP TABLE messages_cache_legacy")
+            await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_account ON messages_cache(account_id)")
+            await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_category ON messages_cache(category)")
+            await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_received ON messages_cache(received_at)")
+            await self._conn.execute("PRAGMA foreign_keys = ON")
+
+        # Existing VPS databases were created before unread bootstrap existed.
+        # Add the column in-place so deployment needs no destructive migration.
+        columns = await self._conn.execute_fetchall("PRAGMA table_info(mail_accounts)")
+        if not any(row[1] == "unread_bootstrap_done" for row in columns):
+            await self._conn.execute(
+                "ALTER TABLE mail_accounts ADD COLUMN unread_bootstrap_done "
+                "BOOLEAN NOT NULL DEFAULT 0"
+            )
         await self._conn.commit()
 
     async def close(self) -> None:
@@ -265,8 +321,23 @@ class Database:
                ORDER BY a.next_sync_at ASC"""
         )
 
-    async def delete_account(self, account_id: int) -> None:
-        await self._execute("DELETE FROM mail_accounts WHERE id = ?", (account_id,))
+    async def delete_account(self, account_id: int, user_id: int | None = None) -> bool:
+        """Delete an account and its cached mail, optionally scoped to owner.
+
+        Cached rows are removed explicitly before the parent row. This keeps
+        unlink reliable for legacy SQLite databases whose foreign-key cascade
+        was created incorrectly, while the current schema still has CASCADE.
+        """
+        account = await self.get_account(account_id)
+        if account is None or (user_id is not None and account["user_id"] != user_id):
+            return False
+        await self._execute(
+            "DELETE FROM messages_cache WHERE account_id = ?", (account_id,)
+        )
+        cur = await self._execute(
+            "DELETE FROM mail_accounts WHERE id = ?", (account_id,)
+        )
+        return cur.rowcount > 0
 
     async def set_account_active(self, account_id: int, is_active: bool) -> None:
         await self._execute(
@@ -293,6 +364,27 @@ class Database:
         await self._execute(
             "UPDATE mail_accounts SET last_checkpoint = ? WHERE id = ?",
             (checkpoint, account_id),
+        )
+
+    async def mark_unread_bootstrap_done(self, account_id: int) -> None:
+        await self._execute(
+            "UPDATE mail_accounts SET unread_bootstrap_done = 1 WHERE id = ?",
+            (account_id,),
+        )
+
+    async def update_message_from_provider(
+        self, message_id: int, *, is_read: bool, category: str, received_at: int,
+        sender_name: str | None, sender_email: str | None, subject: str | None,
+        snippet: str | None, body_text: str | None, provider_message_id: str,
+    ) -> None:
+        """Refresh a cached row when the provider returns it again."""
+        await self._execute(
+            """UPDATE messages_cache
+               SET sender_name = ?, sender_email = ?, subject = ?, snippet = ?,
+                   body_text = ?, category = ?, received_at = ?, is_read = ?
+               WHERE id = ?""",
+            (sender_name, sender_email, subject, snippet, body_text, category,
+             received_at, int(is_read), message_id),
         )
 
     async def schedule_next_sync(self, account_id: int, interval_seconds: int) -> None:
@@ -330,6 +422,7 @@ class Database:
         body_text: str | None,
         category: str,
         received_at: int,
+        is_read: bool = False,
     ) -> bool:
         """Insert a message if new; returns True when a NEW message was stored.
 
@@ -338,8 +431,8 @@ class Database:
         cur = await self._execute(
             """INSERT OR IGNORE INTO messages_cache
                (account_id, provider_message_id, sender_name, sender_email,
-                subject, snippet, body_text, category, received_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                subject, snippet, body_text, category, received_at, is_read)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 account_id,
                 provider_message_id,
@@ -350,6 +443,7 @@ class Database:
                 body_text,
                 category,
                 received_at,
+                int(is_read),
             ),
         )
         return cur.rowcount > 0
@@ -363,7 +457,10 @@ class Database:
     ) -> list[dict]:
         sql = "SELECT * FROM messages_cache WHERE account_id = ?"
         params: list[Any] = [account_id]
+        sql += " AND category NOT IN ('promo', 'spam')"
         if category and category in CATEGORIES:
+            if category in SUPPRESSED_NOTIFICATION_CATEGORIES:
+                return []
             sql += " AND category = ?"
             params.append(category)
         sql += " ORDER BY received_at DESC LIMIT ? OFFSET ?"
@@ -384,6 +481,14 @@ class Database:
         """Number of cached messages for an account (0 = not yet imported)."""
         row = await self._fetchone(
             "SELECT COUNT(*) AS n FROM messages_cache WHERE account_id = ?",
+            (account_id,),
+        )
+        return int((row or {}).get("n", 0))
+
+    async def get_unread_message_count(self, account_id: int) -> int:
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n FROM messages_cache "
+            "WHERE account_id = ? AND is_read = 0",
             (account_id,),
         )
         return int((row or {}).get("n", 0))

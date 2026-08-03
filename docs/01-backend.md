@@ -26,7 +26,7 @@
 | `sync_gmail.py` | Gmail REST: инкрементальный синк, mark-read через `messages.modify` |
 | `sync_yandex.py` | Yandex IMAP XOAUTH2: UID-инкремент, STORE `\Seen` |
 | `mark_read.py` | Best-effort прокидывание «прочитано» в провайдера (fire-and-forget) |
-| `classifier.py` | Эвристики категорий (important/promo/spam/other) |
+| `classifier.py` | Эвристики категорий (important/promo/spam/social/other); promo/spam подавляются |
 | `locales/` | ru.json, en.json |
 
 ## Авторизация Mini App
@@ -76,13 +76,15 @@ journalctl -u mailhub --since '15 min ago' --no-pager \
 Цикл движка просыпается каждые `SYNC_BASE_INTERVAL_SECONDS` (5 с) и синкает аккаунты, у которых `next_sync_at <= now`.
 
 **Gmail (REST):**
-- Первый импорт: `messages.list` (последние 50) + `users.getProfile` → стартовый `historyId`
-- Дальше: `users.history` от checkpoint'а (`historyTypes=messageAdded`), дедупликация по id
+- Bootstrap: `messages.list` (последние 50) + до 50 последних непрочитанных (`is:unread in:inbox`) + `users.getProfile` → стартовый `historyId`
+- Дальше: все страницы `users.history` от checkpoint'а (`historyTypes=messageAdded`), дедупликация по id
+- Если Gmail вернул устаревший history id (404), выполняется новый bootstrap вместо долгого backoff
 - Полное тело: `messages.get` (format=full), парсинг payload → text/plain
 
 **Яндекс (IMAP):**
 - `imap.yandex.ru:993`, XOAUTH2 через нативный `xoauth2()` (aioimaplib 2.x)
 - `uid_search("ALL")`, фильтр `uid >= checkpoint`, батч 50, новые письма первыми
+- Для старых аккаунтов один раз выполняется `uid_search("UNSEEN")`, чтобы восстановить свежие непрочитанные письма; флаг хранится в `mail_accounts.unread_bootstrap_done`
 - `BODY.PEEK[]` (не меняет флаг), разбор MIME (RFC 2047-заголовки, HTML→текст)
 
 **Эластичный интервал (на аккаунт):**
@@ -112,7 +114,7 @@ POLL_MIN = 10с, POLL_MAX = 300с
 GET    /api/health
 GET    /api/accounts
 DELETE /api/accounts/{id}
-GET    /api/accounts/{id}/messages?category=&limit=&offset=
+GET    /api/accounts/{id}/messages?category=&limit=20&offset=  # response also has_more
 GET    /api/messages/{id}
 POST   /api/messages/{id}/read
 GET    /api/settings

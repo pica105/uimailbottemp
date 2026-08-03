@@ -22,7 +22,7 @@ from . import sync_yandex
 from .bot_handlers import i18n, send_new_mail_notification
 from .config import settings
 from .crypto import decrypt, encrypt
-from .database import Database
+from .database import Database, SUPPRESSED_NOTIFICATION_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +184,7 @@ async def _notify_new_messages(
     lang = account.get("user_language") or "en"
 
     for msg in messages:
-        if msg["category"] in muted:
+        if msg["category"] in SUPPRESSED_NOTIFICATION_CATEGORIES or msg["category"] in muted:
             # Mark muted messages as notified so they're not re-sent later.
             await db.mark_notified(msg["id"])
             continue

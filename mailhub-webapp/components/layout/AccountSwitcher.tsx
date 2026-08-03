@@ -29,7 +29,11 @@ export function AccountSwitcher() {
 
   // Keep the store in sync when accounts load for the first time.
   useEffect(() => {
-    if (accounts.length > 0 && activeAccountId === null) {
+    if (accounts.length === 0) {
+      if (activeAccountId !== null) setActiveAccount(null);
+      return;
+    }
+    if (!accounts.some((account) => account.id === activeAccountId)) {
       setActiveAccount(accounts[0].id);
     }
   }, [accounts, activeAccountId, setActiveAccount]);

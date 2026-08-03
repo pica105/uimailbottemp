@@ -31,7 +31,7 @@ export const messageSchema = z.object({
   subject: z.string(),
   snippet: z.string(),
   body_text: z.string().nullable(),
-  category: z.enum(["important", "promo", "spam", "other"]),
+  category: z.enum(["important", "promo", "spam", "social", "other"]),
   received_at: z.number(),
   is_read: z.boolean(),
 });
@@ -39,7 +39,7 @@ export const messageSchema = z.object({
 export const settingsSchema = z.object({
   language: z.enum(["ru", "en"]),
   polling_interval_seconds: z.number(),
-  muted_categories: z.array(z.enum(["promo", "spam", "other"])),
+  muted_categories: z.array(z.enum(["promo", "spam", "social", "other"])),
   accounts: z.array(accountSchema),
 });
 
@@ -49,6 +49,7 @@ export const accountsResponseSchema = z.object({
 
 export const messagesResponseSchema = z.object({
   messages: z.array(messageSchema),
+  has_more: z.boolean(),
 });
 
 export const messageResponseSchema = z.object({
@@ -113,8 +114,11 @@ export const api = {
   deleteAccount: (id: number) =>
     request(`/api/accounts/${id}`, okResponseSchema, { method: "DELETE" }),
 
-  messages: (accountId: number, category?: string, limit = 50) => {
-    const params = new URLSearchParams({ limit: String(limit) });
+  messages: (accountId: number, category?: string, limit = 20, offset = 0) => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
     if (category && category !== "all") params.set("category", category);
     return request(`/api/accounts/${accountId}/messages?${params}`, messagesResponseSchema, {
       cache: "no-store",
@@ -132,7 +136,7 @@ export const api = {
 
   updateSettings: (body: {
     language?: "ru" | "en";
-    muted_categories?: string[];
+    muted_categories?: ("promo" | "spam" | "social" | "other")[];
   }) =>
     request("/api/settings", settingsResponseSchema, {
       method: "PATCH",

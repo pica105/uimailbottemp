@@ -38,6 +38,7 @@
   "category_important": "Важное",
   "category_promo": "Реклама",
   "category_spam": "Спам",
+  "category_social": "Соцсети",
   "category_other": "Другое",
   "oauth_success": "Авторизация завершена! ✅",
   "oauth_failed": "Ошибка авторизации: {error}. Попробуйте ещё раз.",

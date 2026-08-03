@@ -51,10 +51,16 @@ export function MessageList() {
   const { data: accountsData, isLoading: accountsLoading } = useAccounts();
   const hasAccounts = (accountsData?.accounts.length ?? 0) > 0;
 
-  const { data, isLoading, isError, refetch, isFetching } = useMessages(
-    activeAccountId,
-    activeCategory,
-  );
+  const {
+    data,
+    isLoading,
+    isError,
+    refetch,
+    isFetching,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useMessages(activeAccountId, activeCategory);
 
   if (accountsLoading) return <MessageSkeletons />;
   if (!hasAccounts) {
@@ -79,7 +85,7 @@ export function MessageList() {
     );
   }
 
-  const messages = data?.messages ?? [];
+  const messages = data?.pages.flatMap((page) => page.messages) ?? [];
 
   if (messages.length === 0) {
     return (
@@ -105,6 +111,17 @@ export function MessageList() {
       {messages.map((m, i) => (
         <MessageRow key={m.id} message={m} index={i} />
       ))}
+      {hasNextPage && (
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full"
+          onClick={() => fetchNextPage()}
+          disabled={isFetchingNextPage}
+        >
+          {isFetchingNextPage ? "…" : t("messages.load_more")}
+        </Button>
+      )}
     </div>
   );
 }

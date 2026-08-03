@@ -52,7 +52,7 @@ journalctl -u mailhub --since '15 min ago' --no-pager \
 
 ### 5. Просмотр и действия
 
-1. Inbox: категории All/Important/Promo/Spam, аккаунты, просмотр письма.
+1. Inbox: категории All/Important/Social/Other, аккаунты, просмотр письма и Load more; Promo/Spam скрыты и не уведомляются.
 2. «Прочитано»: оптимистичное обновление UI + фоновая отправка статуса в ящик.
 3. Gmail: `messages.modify`; Яндекс: `STORE +FLAGS (\Seen)`.
 

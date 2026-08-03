@@ -62,9 +62,14 @@ def test_classifier() -> None:
     assert classify_yandex_message(msg3) == "spam"
 
     msg4 = Message()
-    msg4["From"] = "alice@example.com"
-    msg4["Subject"] = "Meeting tomorrow"
-    assert classify_yandex_message(msg4) == "important"
+    msg4["From"] = "notifications@linkedin.com"
+    msg4["Subject"] = "You have a new connection"
+    assert classify_yandex_message(msg4) == "social"
+
+    msg5 = Message()
+    msg5["From"] = "alice@example.com"
+    msg5["Subject"] = "Meeting tomorrow"
+    assert classify_yandex_message(msg5) == "important"
     print("  ✓ classifier heuristics")
 
 
@@ -114,6 +119,22 @@ async def _db_scenario(db: Database) -> None:
     assert len(messages) == 1
     assert messages[0]["category"] == "important"
 
+    social_inserted = await db.upsert_message(
+        acc["id"], "social-1",
+        sender_name="Network", sender_email="notifications@linkedin.com",
+        subject="New connection", snippet="", body_text="",
+        category="social", received_at=1100,
+    )
+    assert social_inserted is True
+    assert [m["category"] for m in await db.get_messages(acc["id"])] == ["social", "important"]
+
+    promo_inserted = await db.upsert_message(
+        acc["id"], "promo-1", sender_name="Promo", sender_email="promo@example.com",
+        subject="Sale", snippet="", body_text="", category="promo", received_at=1200,
+    )
+    assert promo_inserted is True
+    assert all(m["category"] != "promo" for m in await db.get_messages(acc["id"]))
+
     await db.mark_read(messages[0]["id"])
     fetched = await db.get_message(messages[0]["id"])
     assert fetched is not None and fetched["is_read"] == 1
@@ -124,6 +145,11 @@ async def _db_scenario(db: Database) -> None:
     assert row is not None and row["provider"] == "gmail"
     await db.delete_oauth_state("state-1")
     assert await db.get_oauth_state("state-1") is None
+
+    deleted = await db.delete_account(acc["id"], 42)
+    assert deleted is True
+    assert await db.get_account(acc["id"]) is None
+    assert await db.get_message_count(acc["id"]) == 0
 
     await db.close()
 

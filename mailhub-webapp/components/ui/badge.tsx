@@ -11,6 +11,7 @@ const badgeVariants = cva(
         important: "bg-red-500/10 text-red-600 dark:text-red-400",
         promo: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
         spam: "bg-zinc-500/10 text-zinc-600 dark:text-zinc-400",
+        social: "bg-sky-500/10 text-sky-600 dark:text-sky-400",
         other: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
         outline: "border border-border text-foreground",
       },
