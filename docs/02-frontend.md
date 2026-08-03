@@ -78,7 +78,7 @@ journalctl -u mailhub --since '15 min ago' --no-pager \
 
 `lib/api.ts`: типизированные обёртки (Zod-схемы ответов). `accounts` и `settings` имеют `staleTime: 30 с`; список сообщений использует общий `QueryClient`-параметр `staleTime: 15 с`. `useMessages` содержит мутации mark-read с optimistic update и откатом при ошибке. Полинга во frontend нет: данные обновляются при загрузке, навигации, ручном refresh и после действий.
 
-Защищённые queries включаются только при наличии `initData`. `/api/health` — единственный публичный health-check; остальные `/api/*` требуют валидную Telegram-подпись.
+Защищённые queries включаются только при наличии `initData`. `/api/health` — единственный публичный health-check; остальные `/api/*` требуют валидную Telegram-подпись. Список писем получает страницы по 20 элементов и поле `has_more`; кнопка Load more увеличивает `offset` на 20.
 
 ## Сборка и деплой
 
@@ -91,7 +91,7 @@ npm run build && npm start           # prod
 
 Прод на VPS: `next build` → systemd `mailhub-web` → `next start -p 3001`, nginx `/` → 3001.
 
-**Экономная сборка при тесном диске:** сначала проверьте `df -h /`. Если dev-зависимости уже установлены, повторный install не нужен. При необходимости восстановления зависимостей сначала убедитесь, что свободного места достаточно, затем направьте кэш npm в RAM:
+**Экономная сборка при тесном диске:** сначала проверьте `df -h /`. Если dev-зависимости уже установлены, повторный install не нужен — достаточно `npm run build`. При необходимости восстановления зависимостей сначала убедитесь, что свободного места достаточно, затем направьте кэш npm в RAM и не скачивайте Playwright browser:
 
 ```bash
 df -h /
@@ -112,7 +112,7 @@ rm -rf /dev/shm/npm-cache /tmp/npm-cache
 npm run test          # Vitest
 npm run typecheck     # tsc --noEmit
 npm run lint
-npm run test:e2e      # Playwright (нужен: npx playwright install chromium)
+npm run test:e2e      # локально; браузер не скачивать на VPS
 ```
 
 E2E-покрытие должно проверять не только наличие SDK `<script>`, но и отправку `X-Telegram-Init-Data` в `/api/*`. Для внешней проверки домена из локального компьютера используется:

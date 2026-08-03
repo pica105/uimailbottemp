@@ -119,7 +119,8 @@ Every `/api/*` route validates the Telegram WebApp `initData` passed in the `X-T
 GET    /api/health
 GET    /api/accounts
 DELETE /api/accounts/{id}
-GET    /api/accounts/{id}/messages?category=&limit=&offset=
+GET    /api/accounts/{id}/messages?category=&limit=20&offset=
+         → {"messages": [...], "has_more": true|false}; Promo/Spam не выдаются
 GET    /api/messages/{id}
 POST   /api/messages/{id}/read
 GET    /api/settings
@@ -133,14 +134,14 @@ GET    /oauth/yandex/callback?code=&state=
 
 ```bash
 # backend — from the project root
-./.venv/bin/python scripts/smoke_test.py        # crypto, DB, classifier, initData, OAuth URLs, parsers
+./.venv/bin/python scripts/smoke_test.py        # 9 checks: crypto, DB, legacy FK repair, classifier, auth, OAuth, parsers, polling
 ./.venv/bin/python scripts/api_simulation.py    # live HTTP + every endpoint
 
 # frontend — from mailhub-webapp
 npm run test          # Vitest unit tests
 npm run typecheck
 npm run lint
-npx playwright install chromium   # once, for e2e
+npx playwright install chromium   # locally only; do not download browsers on VPS
 npm run test:e2e
 ```
 
@@ -148,11 +149,11 @@ npm run test:e2e
 
 The production setup is two systemd services plus nginx:
 
-- `mailhub` — `python -m mailhub.main` on `127.0.0.1:8000`
+- `mailhub` — `/uimailbot/venv/bin/python mailhub/main.py` on `127.0.0.1:8000` (systemd)
 - `mailhub-web` — `next start -p 3001` (built with `npm run build`)
 - nginx: `/` → 3001, `/api/` and `/oauth/` → 8000, TLS via certbot
 
-See `docs/01-backend.md` for the full operational details.
+Before updating a VPS, back up `mailhub.db`; startup repairs the known interrupted `users_old` foreign-key migration without discarding rows. See `docs/01-backend.md` and `RUN_GUIDE.md` for operational details.
 
 ## Repository layout
 

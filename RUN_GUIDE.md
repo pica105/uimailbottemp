@@ -17,7 +17,7 @@ ssh root@91.186.211.218        # порт 22; пароль хранится от
 | Компонент | Где | Сервис | Порт |
 |---|---|---|---|
 | Backend (REST API + OAuth) | `/uimailbot/mailhub` | `mailhub` | 8000 |
-| Telegram-бот | тот же процесс (`python -m mailhub.main`) | `mailhub` | — |
+| Telegram-бот | тот же процесс (`venv/bin/python mailhub/main.py`) | `mailhub` | — |
 | Движок синхронизации | тот же процесс | `mailhub` | — |
 | Frontend Mini App (Next.js) | `/uimailbot/mailhub-webapp` | `mailhub-web` | 3001 |
 | nginx (домен → сервисы) | `/etc/nginx/sites-available/uimail` | `nginx` | 443 |
@@ -70,7 +70,7 @@ ss -tln | grep -E ':(8000|3001) '
 
 ```bash
 cd /uimailbot
-venv/bin/python -m mailhub.main
+venv/bin/python mailhub/main.py
 ```
 
 Не запускайте параллельно ручной процесс и systemd-сервис: они будут конкурировать за Telegram long polling и порты.
@@ -117,11 +117,39 @@ journalctl -u mailhub --since '15 min ago' --no-pager \
 Перед pull проверьте локальное состояние. Не затирайте `.env`, `mailhub.db` и `venv/`. Нормально, если `venv/` отображается как локальная untracked-папка. После npm install также может измениться `mailhub-webapp/package-lock.json`; сначала проверьте diff. Если это только автоматически созданное локальное изменение без намеренных правок, восстановите только lock-файл:
 
 ```bash
+set -e
 cd /uimailbot
+df -h /
 git status --short
-git diff -- mailhub-webapp/package-lock.json
-git checkout -- mailhub-webapp/package-lock.json  # только если diff служебный
-git pull --ff-only
+# Если tracked-изменения есть, сначала сохраните их в stash; venv/ не трогайте.
+stamp=$(date +%Y%m%d-%H%M%S)
+backend_recovery=1
+trap '[ "$backend_recovery" = 1 ] && systemctl start mailhub || true' EXIT
+systemctl stop mailhub
+mkdir -p backups
+gzip -c mailhub.db > "backups/mailhub-${stamp}.db.gz"
+git stash push -m "vps-predeploy-${stamp}" -- .
+if ! git pull --ff-only; then
+  echo 'git pull failed; previous backend will be started by trap'
+  exit 1
+fi
+systemctl start mailhub
+backend_recovery=0
+trap - EXIT
+for i in $(seq 1 30); do
+  code=$(curl -sk -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/health || true)
+  [ "$code" = 200 ] && break
+  sleep 1
+done
+
+# Проверка production SQLite без записи:
+venv/bin/python - <<'PY'
+import sqlite3
+c = sqlite3.connect("file:/uimailbot/mailhub.db?mode=ro", uri=True, timeout=2)
+print("foreign_key_check:", list(c.execute("PRAGMA foreign_key_check")))
+print("integrity_check:", c.execute("PRAGMA integrity_check").fetchone()[0])
+c.close()
+PY
 ```
 
 Если есть другие modified tracked files, остановитесь и разберите их вручную — не используйте `git reset --hard`.
@@ -148,10 +176,15 @@ rm -rf .next
 npm run build
 cd /uimailbot
 venv/bin/python -m py_compile mailhub/oauth_server.py mailhub/main.py
-systemctl restart mailhub mailhub-web
+systemctl restart mailhub-web
+for i in $(seq 1 30); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/inbox || true)
+  [ "$code" = 200 ] && break
+  sleep 1
+done
 ```
 
-Если dev-зависимости действительно нужно восстановить, делайте это только после проверки свободного места и направляйте npm-кэш в RAM:
+Если dev-зависимости действительно нужно восстановить, делайте это только после проверки свободного места и направляйте npm-кэш в RAM. Playwright browsers на VPS не скачивайте — e2e запускайте локально:
 
 ```bash
 cd /uimailbot/mailhub-webapp
@@ -285,10 +318,14 @@ journalctl --vacuum-size=20M
 rm -rf /tmp/npm-cache /dev/shm/npm-cache
 ```
 
-Бэкап базы перед миграциями:
+Бэкап базы перед миграциями (только после остановки backend):
 
 ```bash
-cp /uimailbot/mailhub.db /root/mailhub.db.backup
+mkdir -p /uimailbot/backups
+stamp=$(date +%Y%m%d-%H%M%S)
+systemctl stop mailhub
+gzip -c /uimailbot/mailhub.db > "/uimailbot/backups/mailhub-${stamp}.db.gz"
+systemctl start mailhub
 ```
 
 Не удаляйте `mailhub.db`, `.env` или `venv/` для освобождения места без отдельного плана восстановления.
@@ -299,8 +336,8 @@ cp /uimailbot/mailhub.db /root/mailhub.db.backup
 |---|---|
 | Синхронизация Gmail + Яндекс | ✅ инкрементальная |
 | Автоматический интервал | ✅ 10с–5мин, без ручного выбора |
-| Telegram-уведомления | ✅ |
-| API accounts/messages/settings/mark-read | ✅ при валидном Telegram initData |
+| Telegram-уведомления | ✅; Promo/Spam подавляются всегда |
+| API accounts/messages/settings/mark-read | ✅ при валидном Telegram initData; messages: `has_more` pagination |
 | Mark-read Яндекс | ✅ после provider-запроса |
 | Mark-read Gmail | ⚠️ нужен scope `gmail.modify`; старый readonly-токен требует переподключения |
 | OAuth | ✅ |

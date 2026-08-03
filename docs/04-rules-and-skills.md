@@ -39,7 +39,7 @@
 - После восстановления dev-зависимостей сначала проверить свободное место: VPS может снова заполниться; не делать повторный `npm install` без необходимости
 - ОЗУ ограничено — `NODE_OPTIONS=--max-old-space-size=512`
 - При деплое не трогать `.env`, `mailhub.db` и `venv/`; проверить `git status` перед `git pull --ff-only`
-- После `systemctl restart` ждать реального ответа `/api/health`, а не полагаться на фиксированный `sleep`: backend сначала подключается к Telegram API
+- Перед VPS update сделать gzip-backup SQLite; после `systemctl restart` ждать реального ответа `/api/health`, а не полагаться на фиксированный `sleep`: backend сначала подключается к Telegram API
 - Миграции схемы SQLite: CHECK-ограничения меняются только пересозданием таблицы (копирование данных, `PRAGMA foreign_keys=OFF`)
 - Если Git показывает локальный `package-lock.json` после npm install — проверить diff и восстановить только этот служебный файл перед pull, если он не содержит намеренных изменений
 
@@ -61,7 +61,7 @@
 
 ## Тестирование
 
-- Backend: `scripts/smoke_test.py` + `scripts/api_simulation.py` — обязательно перед пушем
+- Backend: `scripts/smoke_test.py` (9 checks, включая users_old repair) + `scripts/api_simulation.py` (16 checks) — обязательно перед пушем
 - Frontend: `npm run typecheck`, `npm run test`, `npm run lint`, `npm run build`
 - E2E: наличие Telegram SDK и фактический `X-Telegram-Init-Data` в API-запросе
 - Внешний домен: `scripts/external_api_test.py` с валидной подписью и проверкой ожидаемого 401 без неё

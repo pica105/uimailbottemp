@@ -10,7 +10,7 @@
 - **Шифрование:** cryptography / Fernet (токены в БД)
 - **Конфиг:** pydantic-settings, `.env` рядом с пакетом
 
-Один asyncio-процесс (`python -m mailhub.main`) поднимает HTTP-сервер, poller бота и движок синхронизации. Graceful shutdown по SIGINT/SIGTERM. HTTP-сервер слушает только после инициализации Telegram bot API, поэтому после `systemctl start` health-check нужно выполнять в цикле или подождать примерно 10–15 секунд.
+Один asyncio-процесс (`python mailhub/main.py`; systemd на VPS использует `venv/bin/python mailhub/main.py`) поднимает HTTP-сервер, poller бота и движок синхронизации. Graceful shutdown по SIGINT/SIGTERM. HTTP-сервер слушает только после инициализации Telegram bot API, поэтому после `systemctl start` health-check нужно выполнять в цикле или подождать примерно 10–15 секунд.
 
 ## Модули
 
@@ -18,7 +18,7 @@
 |---|---|
 | `main.py` | Точка входа: бот + HTTP + sync loop |
 | `config.py` | Pydantic-settings, валидация env (ключ Fernet, токен) |
-| `database.py` | aiosqlite: схема + все запросы |
+| `database.py` | aiosqlite: схема, запросы и безопасные repair-migrations |
 | `crypto.py` | Fernet encrypt/decrypt |
 | `bot_handlers.py` | aiogram: /start, /accounts, /settings, /help, OAuth-кнопки, уведомления, i18n |
 | `oauth_server.py` | aiohttp: OAuth-колбэки, REST API, проверка initData (HMAC-SHA256), auth diagnostics |
@@ -28,6 +28,16 @@
 | `mark_read.py` | Best-effort прокидывание «прочитано» в провайдера (fire-and-forget) |
 | `classifier.py` | Эвристики категорий (important/promo/spam/social/other); promo/spam подавляются |
 | `locales/` | ru.json, en.json |
+
+## Миграции SQLite
+
+При старте `Database.connect()` выполняет только обратимые по данным проверки схемы:
+
+- добавляет `mail_accounts.unread_bootstrap_done` в старые базы;
+- расширяет CHECK-контракт `messages_cache` для категории `social`, сохраняя кэш;
+- исправляет прерванную миграцию, если `mail_accounts` или `oauth_states` всё ещё ссылаются на удалённую `users_old`; строки копируются в новые таблицы с `REFERENCES users`. После запуска миграцию можно проверить read-only командой `PRAGMA foreign_key_check`; regression-тест делает эту проверку автоматически.
+
+Перед обновлением production остановите `mailhub`, создайте gzip-копию SQLite и только после этого запускайте миграцию/сервис. Для read-only проверки production используйте `sqlite3.connect("file:/uimailbot/mailhub.db?mode=ro", uri=True)` и `PRAGMA foreign_key_check`; regression smoke fixture не заменяет эту проверку. Не удаляйте исходную базу вручную.
 
 ## Авторизация Mini App
 
@@ -114,7 +124,9 @@ POLL_MIN = 10с, POLL_MAX = 300с
 GET    /api/health
 GET    /api/accounts
 DELETE /api/accounts/{id}
-GET    /api/accounts/{id}/messages?category=&limit=20&offset=  # response also has_more
+GET    /api/accounts/{id}/messages?category=&limit=20&offset=  # response: messages + has_more
+
+`promo` и `spam` сохраняются для совместимости, но не возвращаются списком, не открываются через detail/read API и не отправляются уведомлениями.
 GET    /api/messages/{id}
 POST   /api/messages/{id}/read
 GET    /api/settings
@@ -139,10 +151,10 @@ GET /oauth/yandex/callback?code=&state=
 
 ## Деплой (VPS)
 
-- **systemd `mailhub`:** `venv/bin/python -m mailhub.main`, порт 8000, Restart=always
+- **systemd `mailhub`:** `venv/bin/python mailhub/main.py`, порт 8000, Restart=always
 - **systemd `mailhub-web`:** `next start -p 3001` (фронт)
 - **nginx** (`uimail.synergyflow.ru`): `/` → 3001, `/api/` и `/oauth/` → 8000, TLS
-- **Пути:** репо `/uimailbot`, venv `/uimailbot/venv`, БД `/uimailbot/mailhub.db`, Node 22 `/opt/node`
+- **Пути:** репо `/uimailbot`, venv `/uimailbot/venv`, БД `/uimailbot/mailhub.db`, backups `/uimailbot/backups`, Node 22 `/opt/node`
 - На VPS мало места: сборка должна использовать RAM-кэш npm и не скачивать Playwright browsers. Не выполнять `npm prune --omit=dev` до завершения сборки и тестов.
 
 ## Операции
@@ -166,4 +178,4 @@ for i in $(seq 1 30); do
 done
 ```
 
-Тесты: `./.venv/bin/python scripts/smoke_test.py` (8 проверок: crypto, классификатор, БД, initData HMAC, OAuth URL, Gmail-хелперы, Yandex-парсер, эластичный интервал), `scripts/api_simulation.py` (живой HTTP + все эндпоинты) и `scripts/external_api_test.py` (публичный домен + валидный initData).
+Тесты: `./.venv/bin/python scripts/smoke_test.py` (9 проверок, включая legacy `users_old` FK repair и сохранение данных), `scripts/api_simulation.py` (16 живых HTTP-проверок, включая две страницы pagination и suppression promo/spam) и `scripts/external_api_test.py` (публичный домен + валидный initData).

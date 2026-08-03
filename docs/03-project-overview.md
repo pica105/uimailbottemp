@@ -66,18 +66,18 @@ journalctl -u mailhub --since '15 min ago' --no-pager \
 
 - **GitHub:** `git@github.com:pica105/uimailbottemp.git`, ветка `main`
 - **VPS:** `/uimailbot`
-- **Backend + bot + sync:** systemd `mailhub`, `127.0.0.1:8000`
+- **Backend + bot + sync:** systemd `mailhub` (`venv/bin/python mailhub/main.py`), `127.0.0.1:8000`
 - **Mini App:** systemd `mailhub-web`, `127.0.0.1:3001`
 - **nginx:** `uimail.synergyflow.ru`, HTTPS; `/api/` и `/oauth/` → backend
 - **SQLite:** `/uimailbot/mailhub.db`
 
 ## Статус последнего проверочного snapshot
 
-Ниже зафиксирован результат проверки commit `722da9d` на момент последнего деплоя. Перед эксплуатационными решениями повторяйте health/API-проверки: статус и свободное место на VPS меняются со временем.
+Ниже зафиксирован результат проверки production commit `fd177fb` после деплоя 3 августа 2026. Перед эксплуатационными решениями повторяйте health/API-проверки: статус и свободное место на VPS меняются со временем.
 
 | Компонент | Статус |
 |---|---|
-| Backend compile/smoke/API simulation | ✅ пройдено |
+| Backend compile/smoke/API simulation | ✅ пройдено; 9 smoke + 16 API checks |
 | Frontend typecheck/Vitest/build/lint | ✅ пройдено; lint без ошибок, 2 warning |
 | Telegram SDK в production HTML | ✅ присутствует |
 | Authenticated API по публичному домену | ✅ accounts/settings/messages/mark-read |
@@ -87,10 +87,10 @@ journalctl -u mailhub --since '15 min ago' --no-pager \
 | Уведомления Telegram | ✅ |
 | Mark-read Яндекс | ✅ STORE `\Seen` |
 | Mark-read Gmail | ⚠️ требует OAuth scope `gmail.modify`; старый readonly-токен даёт 403, нужно переподключить аккаунт |
-| Сервисы на VPS | ✅ `mailhub` и `mailhub-web` active |
+| Сервисы на VPS | ✅ `mailhub` и `mailhub-web` active; upstream 8000/3001 отвечают 200 |
 | nginx / HTTPS | ✅ health и Mini App отвечают 200 |
 
-На момент этого snapshot на VPS было около 254 МБ свободно после восстановления frontend dev-зависимостей. Это не постоянная гарантия: перед сборкой всегда проверяйте `df -h /`; кэш npm направляйте в `/dev/shm`.
+На момент этого snapshot на VPS было около 244 МБ свободно, диск заполнен примерно на 95%. Перед сборкой всегда проверяйте `df -h /`; используйте уже установленные зависимости, направляйте npm-кэш в `/dev/shm` и не скачивайте Playwright browsers. Перед миграциями сохраняйте `/uimailbot/mailhub.db` в `/uimailbot/backups`.
 
 ## История
 
