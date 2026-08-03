@@ -14,7 +14,9 @@ import hashlib
 import hmac
 import json
 import os
+import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -152,6 +154,100 @@ async def _db_scenario(db: Database) -> None:
     assert await db.get_message_count(acc["id"]) == 0
 
     await db.close()
+
+
+def test_legacy_users_old_repair() -> None:
+    """Repair the interrupted VPS migration without losing cached data."""
+    path = Path(tempfile.mktemp(suffix=".db"))
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """PRAGMA foreign_keys = OFF;
+        CREATE TABLE users (
+            telegram_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            language TEXT NOT NULL DEFAULT 'en',
+            polling_interval_seconds INTEGER NOT NULL DEFAULT 300,
+            muted_categories TEXT NOT NULL DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE mail_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users_old(telegram_id) ON DELETE CASCADE,
+            provider TEXT NOT NULL CHECK(provider IN ('gmail', 'yandex')),
+            email TEXT NOT NULL,
+            encrypted_access_token TEXT NOT NULL,
+            encrypted_refresh_token TEXT,
+            token_expires_at TIMESTAMP,
+            last_checkpoint TEXT,
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            sync_error_count INTEGER NOT NULL DEFAULT 0,
+            next_sync_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, email)
+        );
+        CREATE TABLE messages_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE,
+            provider_message_id TEXT NOT NULL,
+            sender_name TEXT,
+            sender_email TEXT,
+            subject TEXT,
+            snippet TEXT,
+            body_text TEXT,
+            category TEXT NOT NULL CHECK(category IN ('important', 'promo', 'spam', 'other')),
+            received_at TIMESTAMP NOT NULL,
+            is_read BOOLEAN NOT NULL DEFAULT 0,
+            notified_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(account_id, provider_message_id)
+        );
+        CREATE TABLE oauth_states (
+            state TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users_old(telegram_id) ON DELETE CASCADE,
+            provider TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        INSERT INTO users (telegram_id, username) VALUES (77, 'legacy');
+        INSERT INTO mail_accounts
+            (id, user_id, provider, email, encrypted_access_token,
+             encrypted_refresh_token, token_expires_at, last_checkpoint,
+             is_active, sync_error_count, next_sync_at, created_at)
+            VALUES (7, 77, 'gmail', 'legacy@example.com', 'token', 'refresh',
+                    NULL, NULL, 1, 0, NULL, CURRENT_TIMESTAMP);
+        INSERT INTO messages_cache
+            (account_id, provider_message_id, subject, category, received_at)
+            VALUES (7, 'legacy-1', 'Legacy mail', 'important', 100);
+        INSERT INTO oauth_states (state, user_id, provider, created_at)
+            VALUES ('legacy-state', 77, 'gmail', strftime('%s', 'now'));
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    async def scenario() -> None:
+        db = Database(path)
+        try:
+            await db.connect()
+            account = await db.get_account(7)
+            messages = await db.get_messages(7)
+            oauth_state = await db.get_oauth_state("legacy-state")
+            foreign_key_errors = await db._fetchall("PRAGMA foreign_key_check")
+            assert account is not None
+            assert len(messages) == 1 and messages[0]["subject"] == "Legacy mail"
+            assert oauth_state is not None
+            assert foreign_key_errors == []
+            assert await db.delete_account(7, 77) is True
+            assert await db.get_account(7) is None
+        finally:
+            await db.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        path.unlink(missing_ok=True)
+    print("  ✓ legacy users_old foreign-key migration + data preservation")
 
 
 def test_init_data() -> None:
@@ -306,6 +402,7 @@ if __name__ == "__main__":
     test_crypto()
     test_classifier()
     test_database()
+    test_legacy_users_old_repair()
     test_init_data()
     test_oauth_urls()
     test_gmail_helpers()

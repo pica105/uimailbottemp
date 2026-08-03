@@ -101,6 +101,11 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         await self._conn.execute("PRAGMA foreign_keys = ON")
         await self._conn.executescript(SCHEMA)
+        # Repair an interrupted legacy migration that left child tables
+        # pointing at a dropped users_old table. This was observed in the VPS
+        # database and prevents every account/update query from working.
+        await self._repair_user_foreign_keys()
+
         # Existing VPS databases used a CHECK constraint without `social`.
         # Rebuild only that cache table in-place, preserving all cached rows.
         table_sql = await self._fetchone(
@@ -152,6 +157,98 @@ class Database:
                 "BOOLEAN NOT NULL DEFAULT 0"
             )
         await self._conn.commit()
+
+    async def _repair_user_foreign_keys(self) -> None:
+        """Rebuild tables that reference a deleted ``users_old`` table.
+
+        SQLite stores foreign-key targets in table DDL, so creating the
+        current schema with ``IF NOT EXISTS`` cannot repair a half-completed
+        rename migration. Rebuild only when either child explicitly points at
+        the missing/legacy parent; all rows are copied before the old tables
+        are dropped.
+        """
+        account_sql = await self._fetchone(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mail_accounts'"
+        )
+        oauth_sql = await self._fetchone(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'oauth_states'"
+        )
+        needs_repair = any(
+            row and "users_old" in (row["sql"] or "")
+            for row in (account_sql, oauth_sql)
+        )
+        if not needs_repair:
+            return
+
+        account_columns = await self._conn.execute_fetchall("PRAGMA table_info(mail_accounts)")
+        existing_account_columns = {row[1] for row in account_columns}
+        account_fields = [
+            "id", "user_id", "provider", "email", "encrypted_access_token",
+            "encrypted_refresh_token", "token_expires_at", "last_checkpoint",
+            "is_active", "sync_error_count", "next_sync_at", "created_at",
+        ]
+        account_select = [
+            field if field in existing_account_columns else "NULL AS " + field
+            for field in account_fields
+        ]
+        if "unread_bootstrap_done" in existing_account_columns:
+            account_select.append("unread_bootstrap_done")
+        else:
+            account_select.append("0 AS unread_bootstrap_done")
+
+        await self._conn.execute("PRAGMA foreign_keys = OFF")
+        await self._conn.execute("BEGIN")
+        try:
+            await self._conn.execute(
+                """CREATE TABLE mail_accounts_repaired (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                    provider TEXT NOT NULL CHECK(provider IN ('gmail', 'yandex')),
+                    email TEXT NOT NULL,
+                    encrypted_access_token TEXT NOT NULL,
+                    encrypted_refresh_token TEXT,
+                    token_expires_at TIMESTAMP,
+                    last_checkpoint TEXT,
+                    is_active BOOLEAN NOT NULL DEFAULT 1,
+                    sync_error_count INTEGER NOT NULL DEFAULT 0,
+                    next_sync_at TIMESTAMP,
+                    unread_bootstrap_done BOOLEAN NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, email)
+                )"""
+            )
+            await self._conn.execute(
+                """INSERT INTO mail_accounts_repaired
+                   (id, user_id, provider, email, encrypted_access_token,
+                    encrypted_refresh_token, token_expires_at, last_checkpoint,
+                    is_active, sync_error_count, next_sync_at, created_at,
+                    unread_bootstrap_done)
+                   SELECT """ + ", ".join(account_select) + " FROM mail_accounts"
+            )
+            await self._conn.execute(
+                """CREATE TABLE oauth_states_repaired (
+                    state TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                    provider TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                )"""
+            )
+            await self._conn.execute(
+                """INSERT INTO oauth_states_repaired (state, user_id, provider, created_at)
+                   SELECT state, user_id, provider, created_at FROM oauth_states"""
+            )
+            await self._conn.execute("DROP TABLE oauth_states")
+            await self._conn.execute("DROP TABLE mail_accounts")
+            await self._conn.execute("ALTER TABLE mail_accounts_repaired RENAME TO mail_accounts")
+            await self._conn.execute("ALTER TABLE oauth_states_repaired RENAME TO oauth_states")
+            await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_user ON mail_accounts(user_id)")
+            await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_next_sync ON mail_accounts(next_sync_at)")
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
+        finally:
+            await self._conn.execute("PRAGMA foreign_keys = ON")
 
     async def close(self) -> None:
         if self._conn is not None:
