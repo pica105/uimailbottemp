@@ -1,5 +1,12 @@
 import { test, expect, Page } from "@playwright/test";
 
+test("includes the official Telegram WebApp SDK", async ({ page }) => {
+  await page.goto("/inbox");
+  await expect(
+    page.locator('script[src^="https://telegram.org/js/telegram-web-app.js"]'),
+  ).toHaveCount(1);
+});
+
 // Without the Telegram SDK the app shows a placeholder instead of hitting
 // the API (which would 401 without initData).
 test("outside Telegram shows the placeholder", async ({ page }) => {

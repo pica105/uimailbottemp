@@ -35,12 +35,24 @@ export function useTelegram(): TelegramState {
       applyTheme();
     }
 
+    // The SDK is normally available before hydration, but Telegram Web can
+    // finish loading it just after the document becomes interactive. Poll a
+    // few times so protected queries never start with an empty initData.
+    const refresh = () => setState(readState());
+    refresh();
+    const timers = [0, 50, 250, 1_000].map((delay) =>
+      window.setTimeout(refresh, delay),
+    );
+
     const unsubscribe = onThemeChanged(() => {
       applyTheme();
-      setState(readState());
+      refresh();
     });
 
-    return unsubscribe;
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      unsubscribe();
+    };
   }, []);
 
   return state;

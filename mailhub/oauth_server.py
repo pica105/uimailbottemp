@@ -21,7 +21,7 @@ import json
 import logging
 import time
 from html import escape
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from aiohttp import web
 
@@ -83,6 +83,14 @@ def validate_init_data(init_data: str, max_age_seconds: int = 86400) -> dict[str
     return parsed
 
 
+def _safe_log_header(value: str, *, path_only: bool = False) -> str:
+    """Keep attacker-controlled request headers safe and bounded in logs."""
+    value = value.replace("\r", "").replace("\n", "")[:256]
+    if path_only and value:
+        value = urlsplit(value).path or "/"
+    return value
+
+
 def _init_data_middleware(db: Database):
     """Reject /api/* requests without valid initData."""
 
@@ -96,6 +104,18 @@ def _init_data_middleware(db: Database):
         init_data = request.headers.get("X-Telegram-Init-Data", "")
         data = validate_init_data(init_data)
         if data is None:
+            # Never log initData itself: it contains Telegram user data and a
+            # bearer-like HMAC. Log only safe request metadata for diagnosing
+            # client/platform regressions (Telegram Web/Desktop, mobile, etc.).
+            logger.warning(
+                "Mini App auth rejected: method=%s path=%s has_init_data=%s "
+                "user_agent=%r referer=%r",
+                request.method,
+                request.path,
+                bool(init_data),
+                _safe_log_header(request.headers.get("User-Agent", "")),
+                _safe_log_header(request.headers.get("Referer", ""), path_only=True),
+            )
             return web.json_response(
                 {"error": "unauthorized", "message": "Invalid or expired initData"}, status=401
             )

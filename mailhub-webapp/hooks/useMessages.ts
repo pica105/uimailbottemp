@@ -3,41 +3,48 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { api, messageResponseSchema } from "@/lib/api";
+import { useTelegram } from "@/hooks/useTelegram";
 import type { CategoryFilter } from "@/types";
 
 type MessageResponse = z.infer<typeof messageResponseSchema>;
 
 export function useAccounts() {
+  const { initData } = useTelegram();
   return useQuery({
     queryKey: ["accounts"],
     queryFn: api.accounts,
+    enabled: Boolean(initData),
     staleTime: 30_000,
   });
 }
 
 export function useMessages(accountId: number | null, category: CategoryFilter) {
+  const { initData } = useTelegram();
   return useQuery({
     queryKey: ["messages", accountId, category],
     queryFn: () => {
       if (accountId === null) throw new Error("No account selected");
       return api.messages(accountId, category);
     },
-    enabled: accountId !== null,
+    enabled: accountId !== null && Boolean(initData),
   });
 }
 
 export function useMessage(id: number) {
+  const { initData } = useTelegram();
   return useQuery({
     queryKey: ["message", id],
     queryFn: () => api.message(id),
-    enabled: Boolean(id),
+    enabled: Boolean(id) && Boolean(initData),
   });
 }
 
 export function useSettings() {
+  const { initData } = useTelegram();
   return useQuery({
     queryKey: ["settings"],
     queryFn: api.settings,
+    enabled: Boolean(initData),
     staleTime: 30_000,
   });
 }

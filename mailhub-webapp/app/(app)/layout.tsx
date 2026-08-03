@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Inbox, Settings as SettingsIcon } from "lucide-react";
@@ -10,12 +10,19 @@ import { isTelegram } from "@/lib/telegram";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
+function useClientReady() {
+  return useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
+}
+
 export default function AppLayout({ children }: { children: ReactNode }) {
   const { t } = useT();
   const pathname = usePathname();
   // Detect Telegram only after hydration to avoid SSR/client mismatch.
-  const [clientReady, setClientReady] = useState(false);
-  useEffect(() => setClientReady(true), []);
+  const clientReady = useClientReady();
 
   if (clientReady && !isTelegram()) {
     return <OutsideTelegram />;

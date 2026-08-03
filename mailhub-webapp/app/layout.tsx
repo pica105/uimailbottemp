@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import Script from "next/script";
 import { Providers } from "@/components/providers";
 import "./globals.css";
 
@@ -20,6 +21,13 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Required in Telegram Web/Desktop to expose window.Telegram.WebApp.initData. */}
+        <Script
+          src="https://telegram.org/js/telegram-web-app.js?1"
+          strategy="beforeInteractive"
+        />
+      </head>
       <body className="min-h-dvh antialiased">
         <div className="app-bg grid-bg" aria-hidden />
         <Providers>{children}</Providers>
