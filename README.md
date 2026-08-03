@@ -100,14 +100,15 @@ Production build: `npm run build && npm start`.
 3. Scopes: `login:email` and `mail:imap_full`.
 4. Copy Client ID / Secret into `.env`.
 
-### BotFather
+### Telegram bot navigation
+
+The bot keeps one persistent reply keyboard for normal navigation: **My accounts**, **Connect**, **Settings**, and **Help**. Account/provider/message actions stay inline and update the current context. The chat menu button beside the message field opens the Mini App at `MINI_APP_URL`; it is configured at backend startup with `MenuButtonWebApp`. The backend clears the old command list, but `/start` still works when typed manually or from legacy deep links.
+
+For a new bot, BotFather still supplies the token:
 
 ```
 /newbot          — create the bot, copy the token
-/setcommands     — start - Start / connect account
-                   accounts - Manage accounts
-                   settings - Open settings
-                   help - Help
+/setmenubutton   — optional fallback configuration; backend also configures it via Bot API
 /menubutton      — set the menu button URL to the Mini App (MINI_APP_URL)
 ```
 

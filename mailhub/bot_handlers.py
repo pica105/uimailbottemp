@@ -19,7 +19,11 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    LinkPreviewOptions,
+    MenuButtonWebApp,
     Message,
+    ReplyKeyboardMarkup,
     WebAppInfo,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -63,13 +67,22 @@ def language_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text=i18n.t(lang, "btn_connect"), callback_data="connect:start")
-    builder.button(text=i18n.t(lang, "btn_settings"), callback_data="settings:open")
-    builder.button(text=i18n.t(lang, "btn_help"), callback_data="help:open")
-    builder.adjust(1)
-    return builder.as_markup()
+def main_menu_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    """Persistent root navigation; actions below remain contextual inline buttons."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=i18n.t(lang, "btn_accounts"))],
+            [
+                KeyboardButton(text=i18n.t(lang, "btn_connect")),
+                KeyboardButton(text=i18n.t(lang, "btn_settings")),
+            ],
+            [KeyboardButton(text=i18n.t(lang, "btn_help"))],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder=i18n.t(lang, "input_placeholder"),
+    )
+
 
 
 def provider_keyboard(lang: str) -> InlineKeyboardMarkup:
@@ -84,6 +97,8 @@ def provider_keyboard(lang: str) -> InlineKeyboardMarkup:
 def auth_link_keyboard(auth_url: str, lang: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=i18n.t(lang, "authorize"), url=auth_url)
+    builder.button(text=i18n.t(lang, "btn_back"), callback_data="menu:main")
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -121,6 +136,14 @@ def settings_keyboard(lang: str) -> InlineKeyboardMarkup:
     builder.button(text=i18n.t(lang, "btn_back"), callback_data="menu:main")
     builder.adjust(1)
     return builder.as_markup()
+
+
+def configure_menu_button(lang: str = "en") -> MenuButtonWebApp:
+    """Build the persistent private-chat button that opens the Mini App."""
+    return MenuButtonWebApp(
+        text=i18n.t(lang, "open_mini_app_menu"),
+        web_app=WebAppInfo(url=settings.MINI_APP_URL),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +195,10 @@ def register_handlers(router: Router, db: Database) -> None:
             )
             return
         lang = user["language"]
+        await message.bot.set_chat_menu_button(
+            chat_id=message.chat.id,
+            menu_button=configure_menu_button(lang),
+        )
         await message.answer(
             i18n.t(lang, "welcome"),
             reply_markup=main_menu_keyboard(lang),
@@ -180,18 +207,28 @@ def register_handlers(router: Router, db: Database) -> None:
     @router.callback_query(F.data == "lang:ru")
     async def on_lang_ru(call: CallbackQuery) -> None:
         await db.set_language(call.from_user.id, "ru")
-        await call.message.edit_text(
-            i18n.t("ru", "welcome"),
+        await call.message.edit_text(i18n.t("ru", "welcome"))
+        await call.message.answer(
+            i18n.t("ru", "main_menu"),
             reply_markup=main_menu_keyboard("ru"),
+        )
+        await call.bot.set_chat_menu_button(
+            chat_id=call.message.chat.id,
+            menu_button=configure_menu_button("ru"),
         )
         await call.answer()
 
     @router.callback_query(F.data == "lang:en")
     async def on_lang_en(call: CallbackQuery) -> None:
         await db.set_language(call.from_user.id, "en")
-        await call.message.edit_text(
-            i18n.t("en", "welcome"),
+        await call.message.edit_text(i18n.t("en", "welcome"))
+        await call.message.answer(
+            i18n.t("en", "main_menu"),
             reply_markup=main_menu_keyboard("en"),
+        )
+        await call.bot.set_chat_menu_button(
+            chat_id=call.message.chat.id,
+            menu_button=configure_menu_button("en"),
         )
         await call.answer()
 
@@ -199,11 +236,21 @@ def register_handlers(router: Router, db: Database) -> None:
     async def on_menu_main(call: CallbackQuery) -> None:
         user = await db.get_user(call.from_user.id)
         lang = (user or {}).get("language", "en")
-        await call.message.edit_text(
+        await call.message.edit_text(i18n.t(lang, "main_menu"))
+        await call.message.answer(
             i18n.t(lang, "main_menu"),
             reply_markup=main_menu_keyboard(lang),
         )
         await call.answer()
+
+    @router.message(F.text.in_({i18n.t("en", "btn_connect"), i18n.t("ru", "btn_connect")}))
+    async def on_connect_message(message: Message) -> None:
+        user = await db.get_user(message.from_user.id)
+        lang = (user or {}).get("language", "en")
+        await message.answer(
+            i18n.t(lang, "choose_provider"),
+            reply_markup=provider_keyboard(lang),
+        )
 
     @router.callback_query(F.data == "connect:start")
     async def on_connect_start(call: CallbackQuery) -> None:
@@ -218,6 +265,9 @@ def register_handlers(router: Router, db: Database) -> None:
     @router.callback_query(F.data.startswith("provider:"))
     async def on_provider(call: CallbackQuery) -> None:
         provider = call.data.split(":", 1)[1]
+        if provider not in {"gmail", "yandex"}:
+            await call.answer(i18n.t("en", "error_generic"), show_alert=True)
+            return
         user = await db.get_user(call.from_user.id)
         lang = (user or {}).get("language", "en")
         state = secrets.token_urlsafe(32)
@@ -226,6 +276,7 @@ def register_handlers(router: Router, db: Database) -> None:
         await call.message.edit_text(
             i18n.t(lang, "auth_instructions"),
             reply_markup=auth_link_keyboard(auth_url, lang),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
         await call.answer()
 
@@ -248,6 +299,7 @@ def register_handlers(router: Router, db: Database) -> None:
         )
         await call.answer()
 
+    @router.message(F.text.in_({i18n.t("en", "btn_accounts"), i18n.t("ru", "btn_accounts")}))
     @router.message(Command("accounts"))
     async def cmd_accounts(message: Message) -> None:
         user = await db.get_user(message.from_user.id)
@@ -270,7 +322,7 @@ def register_handlers(router: Router, db: Database) -> None:
                 status = i18n.t(lang, "status_inactive")
             text += "\n" + i18n.t(
                 lang, "account_list_item", provider_icon=icon,
-                email=acc["email"], status=status,
+                email=escape(acc["email"]), status=status,
             )
         await message.answer(text, reply_markup=accounts_keyboard(accounts, lang))
 
@@ -280,50 +332,61 @@ def register_handlers(router: Router, db: Database) -> None:
         lang = (user or {}).get("language", "en")
         accounts = await db.get_accounts(call.from_user.id)
         if not accounts:
-            await call.message.edit_text(
-                i18n.t(lang, "no_accounts"),
+            await call.message.edit_text(i18n.t(lang, "no_accounts"))
+            await call.message.answer(
+                i18n.t(lang, "main_menu"),
                 reply_markup=main_menu_keyboard(lang),
             )
             await call.answer()
             return
         text = i18n.t(lang, "accounts_title")
-        await call.message.edit_text(
-            text, reply_markup=accounts_keyboard(accounts, lang)
-        )
+        await call.message.edit_text(text, reply_markup=accounts_keyboard(accounts, lang))
         await call.answer()
 
     @router.callback_query(F.data.startswith("account:manage:"))
     async def on_account_manage(call: CallbackQuery) -> None:
-        account_id = int(call.data.split(":")[2])
+        try:
+            account_id = int(call.data.split(":", 2)[2])
+        except (IndexError, TypeError, ValueError):
+            await call.answer(i18n.t("en", "error_generic"), show_alert=True)
+            return
         user = await db.get_user(call.from_user.id)
         lang = (user or {}).get("language", "en")
         account = await db.get_account(account_id)
-        if account is None:
+        if account is None or account["user_id"] != call.from_user.id:
             await call.answer(i18n.t(lang, "error_generic"), show_alert=True)
             return
         await call.message.edit_text(
-            i18n.t(lang, "confirm_unlink", email=account["email"]),
+            i18n.t(lang, "confirm_unlink", email=escape(account["email"])),
             reply_markup=confirm_unlink_keyboard(account_id, lang),
         )
         await call.answer()
 
     @router.callback_query(F.data.startswith("account:unlink_confirm:"))
     async def on_account_unlink(call: CallbackQuery) -> None:
-        account_id = int(call.data.split(":")[2])
+        try:
+            account_id = int(call.data.split(":", 2)[2])
+        except (IndexError, TypeError, ValueError):
+            await call.answer(i18n.t("en", "error_generic"), show_alert=True)
+            return
         user = await db.get_user(call.from_user.id)
         lang = (user or {}).get("language", "en")
         account = await db.get_account(account_id)
-        if account is None:
+        if account is None or account["user_id"] != call.from_user.id:
             await call.answer(i18n.t(lang, "error_generic"), show_alert=True)
             return
         email = account["email"]
-        await db.delete_account(account_id)
+        await db.delete_account(account_id, call.from_user.id)
         await call.message.edit_text(
-            i18n.t(lang, "account_disconnected", email=email),
+            i18n.t(lang, "account_disconnected", email=escape(email)),
+        )
+        await call.message.answer(
+            i18n.t(lang, "main_menu"),
             reply_markup=main_menu_keyboard(lang),
         )
-        await call.answer(i18n.t(lang, "account_disconnected", email=email))
+        await call.answer(i18n.t(lang, "account_disconnected_toast", email=email))
 
+    @router.message(F.text.in_({i18n.t("en", "btn_settings"), i18n.t("ru", "btn_settings")}))
     @router.message(Command("settings"))
     async def cmd_settings(message: Message) -> None:
         user = await db.get_user(message.from_user.id)
@@ -333,6 +396,7 @@ def register_handlers(router: Router, db: Database) -> None:
             reply_markup=settings_keyboard(lang),
         )
 
+    @router.message(F.text.in_({i18n.t("en", "btn_help"), i18n.t("ru", "btn_help")}))
     @router.message(Command("help"))
     async def cmd_help(message: Message) -> None:
         user = await db.get_user(message.from_user.id)
@@ -341,15 +405,20 @@ def register_handlers(router: Router, db: Database) -> None:
 
     @router.callback_query(F.data.startswith("msg:read:"))
     async def on_msg_read(call: CallbackQuery) -> None:
-        message_id = int(call.data.split(":")[2])
+        try:
+            message_id = int(call.data.split(":", 2)[2])
+        except (IndexError, TypeError, ValueError):
+            await call.answer(i18n.t("en", "error_generic"), show_alert=True)
+            return
         msg = await db.get_message(message_id)
-        if msg is None:
-            await call.answer(i18n.t("en", "error_generic"))
+        user = await db.get_user(call.from_user.id)
+        lang = (user or {}).get("language", "en")
+        account = await db.get_account(msg["account_id"]) if msg else None
+        if msg is None or account is None or account["user_id"] != call.from_user.id:
+            await call.answer(i18n.t(lang, "error_generic"), show_alert=True)
             return
         await db.mark_read(message_id)
         spawn_mark_read(db, msg["account_id"], msg["provider_message_id"])
-        user = await db.get_user(call.from_user.id)
-        lang = (user or {}).get("language", "en")
         await call.answer(i18n.t(lang, "marked_read"))
 
 
@@ -386,7 +455,7 @@ async def send_new_mail_notification(
         text=i18n.t(lang, "btn_mark_read"),
         callback_data=f"msg:read:{message['id']}",
     )
-    builder.adjust(1)
+    builder.adjust(2)
 
     try:
         await bot.send_message(
@@ -394,6 +463,7 @@ async def send_new_mail_notification(
             text,
             parse_mode="HTML",
             reply_markup=builder.as_markup(),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
         await db.mark_notified(message["id"])
     except Exception:  # noqa: BLE001 - notify failure must not break sync

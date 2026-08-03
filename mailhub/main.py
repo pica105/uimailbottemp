@@ -35,7 +35,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiohttp import web
 
-from .bot_handlers import register_handlers
+from .bot_handlers import configure_menu_button, register_handlers
 from .config import settings
 from .database import Database
 from .oauth_server import create_app
@@ -77,14 +77,14 @@ async def main() -> None:
     dp.include_router(router)
     dp["db"] = db
 
-    await bot.set_my_commands(
-        [
-            {"command": "start", "description": "Start / connect account"},
-            {"command": "accounts", "description": "Manage accounts"},
-            {"command": "settings", "description": "Open settings"},
-            {"command": "help", "description": "Help"},
-        ]
-    )
+    # Keep the chat menu focused on the Mini App instead of exposing a long
+    # command list. `/start` remains available when typed manually or from a
+    # deep link, while all normal navigation lives in the persistent keyboard.
+    await bot.set_chat_menu_button(menu_button=configure_menu_button("en"))
+    # Clear any stale BotFather/API command list so the persistent Mini App
+    # button is the only default navigation affordance. `/start` still works
+    # when typed manually and remains compatible with old deep links.
+    await bot.set_my_commands([])
 
     server_app = create_app(db, bot)
     runner = web.AppRunner(server_app)

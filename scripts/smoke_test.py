@@ -33,7 +33,13 @@ from mailhub.config import get_settings  # noqa: E402
 from mailhub.crypto import decrypt, encrypt  # noqa: E402
 from mailhub.database import Database  # noqa: E402
 from mailhub.oauth_server import validate_init_data  # noqa: E402
-from mailhub.bot_handlers import build_oauth_url  # noqa: E402
+from mailhub.bot_handlers import (  # noqa: E402
+    build_oauth_url,
+    configure_menu_button,
+    i18n,
+    main_menu_keyboard,
+)
+from aiogram.types import MenuButtonWebApp, ReplyKeyboardMarkup  # noqa: E402
 
 
 def test_crypto() -> None:
@@ -278,6 +284,23 @@ def test_init_data() -> None:
     print("  ✓ initData HMAC validation")
 
 
+def test_bot_navigation() -> None:
+    """Root navigation uses reply buttons; Mini App uses chat menu button."""
+    for lang in ("ru", "en"):
+        keyboard = main_menu_keyboard(lang)
+        assert isinstance(keyboard, ReplyKeyboardMarkup)
+        assert keyboard.resize_keyboard is True
+        assert keyboard.is_persistent is True
+        assert i18n.t(lang, "btn_accounts") in {
+            button.text for row in keyboard.keyboard for button in row
+        }
+        menu_button = configure_menu_button(lang)
+        assert isinstance(menu_button, MenuButtonWebApp)
+        assert menu_button.type == "web_app"
+        assert menu_button.web_app.url.startswith("https://")
+    print("  ✓ Telegram reply navigation + Mini App menu button")
+
+
 def test_oauth_urls() -> None:
     url = build_oauth_url("gmail", "state123")
     assert "accounts.google.com" in url
@@ -404,6 +427,7 @@ if __name__ == "__main__":
     test_database()
     test_legacy_users_old_repair()
     test_init_data()
+    test_bot_navigation()
     test_oauth_urls()
     test_gmail_helpers()
     test_yandex_parsing()

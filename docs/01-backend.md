@@ -20,7 +20,7 @@
 | `config.py` | Pydantic-settings, валидация env (ключ Fernet, токен) |
 | `database.py` | aiosqlite: схема, запросы и безопасные repair-migrations |
 | `crypto.py` | Fernet encrypt/decrypt |
-| `bot_handlers.py` | aiogram: /start, /accounts, /settings, /help, OAuth-кнопки, уведомления, i18n |
+| `bot_handlers.py` | aiogram: единая reply-навигация, legacy-команды, inline OAuth/уведомления, i18n |
 | `oauth_server.py` | aiohttp: OAuth-колбэки, REST API, проверка initData (HMAC-SHA256), auth diagnostics |
 | `sync_engine.py` | Фоновый цикл, эластичный интервал, бэкофф ошибок, нотификации |
 | `sync_gmail.py` | Gmail REST: инкрементальный синк, mark-read через `messages.modify` |
@@ -110,7 +110,7 @@ POLL_MIN = 10с, POLL_MAX = 300с
 
 ## OAuth-поток
 
-1. `/start` → язык → `/accounts` → «Подключить Gmail/Яндекс»
+1. `/start` → язык → reply-клавиатура → «📬 Мои аккаунты» → «Подключить Gmail/Яндекс»
 2. Бот генерирует URL: `{BASE_URL}/oauth/{provider}/callback` (state хранится в БД, TTL 600 с)
 3. Колбэк: обмен code → tokens, шифрование Fernet, сохранение
 4. Скоупы: Gmail — `gmail.modify`; Яндекс — `login:email` + `mail:imap_full`
