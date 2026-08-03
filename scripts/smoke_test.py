@@ -291,6 +291,138 @@ def test_legacy_users_old_repair() -> None:
     print("  ✓ legacy users_old foreign-key migration + data preservation")
 
 
+def test_compression() -> None:
+    """zstd level-19 compression: markers, threshold, round-trips, ratio."""
+    from mailhub.compression import (
+        MARKER_RAW,
+        MARKER_ZSTD_L19,
+        compress_text,
+        decompress_text,
+    )
+
+    # Short strings stay raw (compression would not pay off).
+    short_blob = compress_text("hi")
+    assert short_blob[0] == MARKER_RAW
+    assert decompress_text(short_blob) == "hi"
+
+    # Empty string round-trips.
+    assert decompress_text(compress_text("")) == ""
+    assert decompress_text(b"") == ""
+
+    # Unicode round-trips, including emoji and CJK.
+    unicode_text = "Тест эмодзи 🎉 и юникода 中文字符" * 50
+    unicode_blob = compress_text(unicode_text)
+    assert decompress_text(unicode_blob) == unicode_text
+
+    # Long repetitive text compresses by far more than the required 3-4x.
+    long_text = "Длинный повторяющийся текст. " * 500
+    long_blob = compress_text(long_text)
+    assert long_blob[0] == MARKER_ZSTD_L19
+    assert decompress_text(long_blob) == long_text
+    ratio = len(long_text.encode("utf-8")) / len(long_blob)
+    assert ratio >= 3.0, f"compression ratio {ratio:.2f}x < 3x"
+
+    # Realistic email-shaped HTML body must also beat 3x.
+    html_body = "<html><body>" + "<p>Hello <b>world</b>! " * 400 + "</body></html>"
+    html_blob = compress_text(html_body)
+    assert decompress_text(html_blob) == html_body
+    html_ratio = len(html_body.encode("utf-8")) / len(html_blob)
+    assert html_ratio >= 3.0, f"html ratio {html_ratio:.2f}x < 3x"
+
+    # Unknown marker must raise instead of silently returning garbage.
+    try:
+        decompress_text(bytes([0xFF]) + b"garbage")
+        raise AssertionError("unknown marker should raise")
+    except ValueError:
+        pass
+
+    # Legacy plain-text values pass through unchanged.
+    assert decompress_text("plain legacy text") == "plain legacy text"
+    assert decompress_text(None) == ""
+    print("  ✓ compression round-trips + ratio (zstd level 19)")
+
+
+def test_compression_db_integration() -> None:
+    """Bodies are transparently compressed on write and decompressed on
+    read; legacy plain-text rows keep working without a migration."""
+    from mailhub.compression import MARKER_ZSTD_L19
+
+    async def scenario(db: Database) -> None:
+        await db.connect()
+        await db.get_or_create_user(99, username="comp", first_name=None, last_name=None)
+        acc = await db.add_account(
+            99, "gmail", "comp@example.com", encrypt("tok"), encrypt("ref"), 0
+        )
+
+        long_body = "Строка длинного письма с повторами. " * 40
+        await db.upsert_message(
+            acc["id"], "c-1",
+            sender_name="S", sender_email="s@example.com", subject="Long",
+            snippet="", body_text=long_body,
+            body_html=f"<p>{long_body}</p>", category="important", received_at=1,
+        )
+        # Short bodies are stored raw but still round-trip.
+        await db.upsert_message(
+            acc["id"], "c-2",
+            sender_name="S", sender_email="s@example.com", subject="Short",
+            snippet="", body_text="hi", category="social", received_at=2,
+        )
+
+        # The raw stored values must actually be compressed BLOBs.
+        raw = await db._fetchone(
+            "SELECT body_text, body_html FROM messages_cache WHERE provider_message_id = ?",
+            ("c-1",),
+        )
+        assert raw is not None
+        assert isinstance(raw["body_text"], bytes) and raw["body_text"][0] == MARKER_ZSTD_L19
+        assert isinstance(raw["body_html"], bytes) and raw["body_html"][0] == MARKER_ZSTD_L19
+
+        # Reads return the original plain text.
+        fetched = await db.get_message(1)
+        assert fetched["body_text"] == long_body
+        assert fetched["body_html"] == f"<p>{long_body}</p>"
+        listed = await db.get_messages(acc["id"])
+        assert {m["subject"]: m["body_text"] for m in listed} == {
+            "Short": "hi",
+            "Long": long_body,
+        }
+
+        # A legacy row inserted as plain text (pre-migration) still reads fine.
+        await db._execute(
+            """INSERT INTO messages_cache
+               (account_id, provider_message_id, sender_name, sender_email,
+                subject, snippet, body_text, body_html, category, received_at)
+               VALUES (?, 'c-3', 'S', 's@example.com', 'Legacy', '', 'old plain body',
+                       '<b>old html</b>', 'important', 3)""",
+            (acc["id"],),
+        )
+        legacy = await db._fetchone(
+            "SELECT * FROM messages_cache WHERE provider_message_id = 'c-3'"
+        )
+        legacy_row = db._decompress_row(legacy)
+        assert legacy_row["body_text"] == "old plain body"
+        assert legacy_row["body_html"] == "<b>old html</b>"
+
+        # update_message_from_provider compresses too.
+        await db.update_message_from_provider(
+            1, is_read=True, category="important", received_at=5,
+            sender_name="S", sender_email="s@example.com", subject="Long",
+            snippet="", body_text=long_body + " updated", body_html=None,
+        )
+        updated_raw = await db._fetchone(
+            "SELECT body_text FROM messages_cache WHERE provider_message_id = 'c-1'"
+        )
+        assert isinstance(updated_raw["body_text"], bytes)
+        updated = await db.get_message(1)
+        assert updated["body_text"] == long_body + " updated"
+
+        await db.close()
+
+    db = Database(":memory:")
+    asyncio.run(scenario(db))
+    print("  ✓ compression transparent in database write/read paths")
+
+
 def test_init_data() -> None:
     settings = get_settings()
     token = settings.BOT_TOKEN
@@ -539,6 +671,8 @@ if __name__ == "__main__":
     test_oauth_urls()
     test_gmail_helpers()
     test_yandex_parsing()
+    test_compression()
+    test_compression_db_integration()
     test_fixed_poll_interval()
     test_settings_keyboard_layout()
     test_notification_builder()

@@ -15,6 +15,7 @@ from typing import Any, Iterable
 import aiosqlite
 
 from .config import settings
+from .compression import compress_text, decompress_text
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -305,6 +306,21 @@ class Database:
         return cur
 
     @staticmethod
+    def _decompress_row(row: dict) -> dict:
+        """Decompress the body fields of a messages_cache row in place.
+
+        Body blobs are transparently compressed with zstd before storage;
+        every read path that returns message rows funnels through this so
+        callers always see plain text. Legacy plain-text rows pass through
+        unchanged.
+        """
+        if row.get("body_text") is not None:
+            row["body_text"] = decompress_text(row["body_text"])
+        if row.get("body_html") is not None:
+            row["body_html"] = decompress_text(row["body_html"])
+        return row
+
+    @staticmethod
     def _now() -> int:
         return int(time.time())
 
@@ -546,8 +562,12 @@ class Database:
                    body_text = ?, body_html = ?, category = ?, received_at = ?,
                    is_read = ?
                WHERE id = ?""",
-            (sender_name, sender_email, subject, snippet, body_text, body_html,
-             category, received_at, int(is_read), message_id),
+            (
+                sender_name, sender_email, subject, snippet,
+                compress_text(body_text) if body_text is not None else None,
+                compress_text(body_html) if body_html is not None else None,
+                category, received_at, int(is_read), message_id,
+            ),
         )
 
     async def schedule_next_sync(self, account_id: int, interval_seconds: int) -> None:
@@ -605,8 +625,8 @@ class Database:
                 sender_email,
                 subject,
                 snippet,
-                body_text,
-                body_html,
+                compress_text(body_text) if body_text is not None else None,
+                compress_text(body_html) if body_html is not None else None,
                 category,
                 received_at,
                 int(is_read),
@@ -639,17 +659,22 @@ class Database:
             params.extend(muted_senders)
         sql += " ORDER BY received_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        return await self._fetchall(sql, params)
+        return [
+            self._decompress_row(row)
+            for row in await self._fetchall(sql, params)
+        ]
 
     async def get_message(self, message_id: int, account_id: int | None = None) -> dict | None:
         if account_id is not None:
-            return await self._fetchone(
+            row = await self._fetchone(
                 "SELECT * FROM messages_cache WHERE id = ? AND account_id = ?",
                 (message_id, account_id),
             )
-        return await self._fetchone(
-            "SELECT * FROM messages_cache WHERE id = ?", (message_id,)
-        )
+        else:
+            row = await self._fetchone(
+                "SELECT * FROM messages_cache WHERE id = ?", (message_id,)
+            )
+        return self._decompress_row(row) if row else None
 
     async def get_message_count(self, account_id: int) -> int:
         """Number of cached messages for an account (0 = not yet imported)."""
@@ -686,12 +711,15 @@ class Database:
         Used by the sync engine so that bursts of new mail are all
         delivered (not just the newest N).
         """
-        return await self._fetchall(
-            """SELECT * FROM messages_cache
-               WHERE account_id = ? AND notified_at IS NULL
-               ORDER BY received_at ASC LIMIT ?""",
-            (account_id, limit),
-        )
+        return [
+            self._decompress_row(row)
+            for row in await self._fetchall(
+                """SELECT * FROM messages_cache
+                   WHERE account_id = ? AND notified_at IS NULL
+                   ORDER BY received_at ASC LIMIT ?""",
+                (account_id, limit),
+            )
+        ]
 
     async def mark_read(self, message_id: int) -> None:
         await self._execute(
