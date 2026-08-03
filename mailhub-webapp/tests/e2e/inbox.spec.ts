@@ -43,6 +43,16 @@ async function injectTelegram(page: Page) {
   });
 }
 
+test("inbox shell sends initData to protected API", async ({ page }) => {
+  await injectTelegram(page);
+  const apiRequest = page.waitForRequest((request) =>
+    request.url().includes("/api/accounts"),
+  );
+  await page.goto("/inbox");
+  const request = await apiRequest;
+  expect(request.headers()["x-telegram-init-data"]).toContain("auth_date=1");
+});
+
 test("inbox shell renders and navigates to settings", async ({ page }) => {
   await injectTelegram(page);
   await page.goto("/inbox");

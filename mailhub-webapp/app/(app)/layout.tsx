@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { Inbox, Settings as SettingsIcon } from "lucide-react";
 import { AccountSwitcher } from "@/components/layout/AccountSwitcher";
 import { OutsideTelegram } from "@/components/OutsideTelegram";
-import { isTelegram } from "@/lib/telegram";
+import { useTelegram } from "@/hooks/useTelegram";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -21,10 +21,11 @@ function useClientReady() {
 export default function AppLayout({ children }: { children: ReactNode }) {
   const { t } = useT();
   const pathname = usePathname();
+  const { isTelegram: telegramReady } = useTelegram();
   // Detect Telegram only after hydration to avoid SSR/client mismatch.
   const clientReady = useClientReady();
 
-  if (clientReady && !isTelegram()) {
+  if (clientReady && !telegramReady) {
     return <OutsideTelegram />;
   }
 

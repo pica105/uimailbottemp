@@ -54,6 +54,18 @@ export function getInitData(): string {
   return getWebApp()?.initData ?? "";
 }
 
+/** Return the Telegram user id without retaining the signed initData in query keys. */
+export function getInitDataUserId(initData: string): number | null {
+  const rawUser = new URLSearchParams(initData).get("user");
+  if (!rawUser) return null;
+  try {
+    const id = JSON.parse(rawUser)?.id;
+    return typeof id === "number" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getThemeParams(): TelegramThemeParams {
   return getWebApp()?.themeParams ?? {};
 }

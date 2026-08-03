@@ -1,11 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { applyTheme, getInitData, isTelegram, onThemeChanged, ready } from "@/lib/telegram";
+import {
+  applyTheme,
+  getInitData,
+  getInitDataUserId,
+  isTelegram,
+  onThemeChanged,
+  ready,
+} from "@/lib/telegram";
 
 export interface TelegramState {
   isTelegram: boolean;
   initData: string;
+  userId: number | null;
 }
 
 // The SDK is initialized once per page load; additional subscribers only
@@ -14,9 +22,10 @@ let initialized = false;
 
 function readState(): TelegramState {
   if (typeof window === "undefined") {
-    return { isTelegram: false, initData: "" };
+    return { isTelegram: false, initData: "", userId: null };
   }
-  return { isTelegram: isTelegram(), initData: getInitData() };
+  const initData = getInitData();
+  return { isTelegram: isTelegram(), initData, userId: getInitDataUserId(initData) };
 }
 
 /**
