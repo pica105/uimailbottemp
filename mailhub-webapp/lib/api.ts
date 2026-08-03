@@ -31,16 +31,21 @@ export const messageSchema = z.object({
   subject: z.string(),
   snippet: z.string(),
   body_text: z.string().nullable(),
-  category: z.enum(["important", "promo", "spam", "social", "other"]),
+  body_html: z.string().nullable(),
+  category: z.string(),
   received_at: z.number(),
   is_read: z.boolean(),
 });
 
 export const settingsSchema = z.object({
   language: z.enum(["ru", "en"]),
-  polling_interval_seconds: z.number(),
-  muted_categories: z.array(z.enum(["promo", "spam", "social", "other"])),
+  muted_categories: z.array(z.string()),
+  categories: z.array(z.string()),
   accounts: z.array(accountSchema),
+});
+
+export const oauthStartResponseSchema = z.object({
+  auth_url: z.string(),
 });
 
 export const accountsResponseSchema = z.object({
@@ -136,10 +141,17 @@ export const api = {
 
   updateSettings: (body: {
     language?: "ru" | "en";
-    muted_categories?: ("promo" | "spam" | "social" | "other")[];
+    muted_categories?: string[];
   }) =>
     request("/api/settings", settingsResponseSchema, {
       method: "PATCH",
       body: JSON.stringify(body),
+    }),
+
+  /** Start OAuth from inside the Mini App; returns the provider auth URL. */
+  oauthStart: (provider: "gmail" | "yandex") =>
+    request("/api/oauth/start", oauthStartResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ provider }),
     }),
 };

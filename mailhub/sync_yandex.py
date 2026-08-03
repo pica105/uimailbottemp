@@ -218,9 +218,10 @@ def _message_to_record(uid: int, msg: Message) -> dict | None:
         if parsed is not None:
             received_at = int(parsed.timestamp())
 
-    # Prefer the text/plain part; fall back to stripping HTML (most
-    # commercial mail is HTML-only and would otherwise have no body).
+    # Prefer the text/plain part; keep the raw HTML too so notifications
+    # can preserve hyperlinks and inline images.
     body_text = ""
+    body_html = ""
     for part in msg.walk():
         if part.get_filename():
             continue
@@ -238,11 +239,12 @@ def _message_to_record(uid: int, msg: Message) -> dict | None:
             text = payload.decode(charset, "replace")
         except Exception:  # noqa: BLE001 - unknown charset
             text = payload.decode("utf-8", "replace")
-        if content_type == "text/plain":
+        if content_type == "text/plain" and not body_text:
             body_text = text
-            break
-        if not body_text:
-            body_text = _html_to_text(text)
+        elif content_type == "text/html" and not body_html:
+            body_html = text
+    if not body_text and body_html:
+        body_text = _html_to_text(body_html)
 
     category = classify_yandex_message(msg)
     snippet = " ".join(body_text.split())[:200]
@@ -253,10 +255,32 @@ def _message_to_record(uid: int, msg: Message) -> dict | None:
         "sender_email": sender_email,
         "subject": subject,
         "snippet": snippet,
-        "body_text": body_text,
+        "body_text": body_text or None,
+        "body_html": body_html or None,
         "category": category,
         "received_at": received_at,
     }
+
+
+async def delete_message(account: dict, provider_message_id: str) -> None:
+    """Delete a Yandex message: mark \\Deleted and expunge (IMAP)."""
+    if not provider_message_id.startswith("yandex-"):
+        raise YandexApiError(f"Unexpected yandex message id: {provider_message_id!r}")
+    uid = provider_message_id.split("-", 1)[1]
+    client = await _connect(account)
+    try:
+        await client.select("INBOX")
+        resp = await client.uid("store", uid, "+FLAGS", r"(\Deleted)")
+        if resp.result != "OK":
+            raise YandexApiError(f"STORE \\Deleted failed for uid {uid}: {resp.lines}")
+        resp = await client.expunge()
+        if resp.result != "OK":
+            raise YandexApiError(f"EXPUNGE failed for uid {uid}: {resp.lines}")
+    finally:
+        try:
+            await client.logout()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def mark_message_read(account: dict, provider_message_id: str) -> None:

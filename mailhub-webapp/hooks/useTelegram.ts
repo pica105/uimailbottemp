@@ -9,6 +9,7 @@ import {
   onThemeChanged,
   ready,
 } from "@/lib/telegram";
+import { useAppStore } from "@/stores/appStore";
 
 export interface TelegramState {
   isTelegram: boolean;
@@ -41,7 +42,8 @@ export function useTelegram(): TelegramState {
     if (!initialized) {
       initialized = true;
       ready();
-      applyTheme();
+      // The user's chosen Mini App theme wins over the client scheme.
+      applyTheme(useAppStore.getState().theme);
     }
 
     // The SDK is normally available before hydration, but Telegram Web can

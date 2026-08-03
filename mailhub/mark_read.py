@@ -58,3 +58,37 @@ def spawn_mark_read(db: Database, account_id: int, provider_message_id: str) -> 
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+async def delete_on_provider(
+    db: Database, account_id: int, provider_message_id: str
+) -> None:
+    """Best-effort: permanently delete the message in the real mailbox."""
+    account = await db.get_account(account_id)
+    if account is None:
+        return
+    try:
+        if account["provider"] == "gmail":
+            await sync_gmail.delete_message(account, provider_message_id)
+        elif account["provider"] == "yandex":
+            await sync_yandex.delete_message(account, provider_message_id)
+        else:
+            return
+        logger.info(
+            "Deleted %s message %s on provider",
+            account["provider"], provider_message_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort by design
+        logger.warning(
+            "Provider delete failed for %s (%s): %s",
+            account.get("email"), account.get("provider"), exc,
+        )
+
+
+def spawn_delete_provider(db: Database, account_id: int, provider_message_id: str) -> None:
+    """Fire-and-forget provider deletion (keeps the chat response fast)."""
+    task = asyncio.create_task(
+        delete_on_provider(db, account_id, provider_message_id)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)

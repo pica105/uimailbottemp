@@ -53,7 +53,8 @@ export function useSettings() {
     queryKey: ["settings", userId],
     queryFn: api.settings,
     enabled: Boolean(initData),
-    staleTime: 30_000,
+    // Always stale: reopening Settings must re-load the user's categories.
+    staleTime: 0,
   });
 }
 

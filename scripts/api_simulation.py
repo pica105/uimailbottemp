@@ -183,19 +183,20 @@ async def main() -> None:
         status, body = await get(f"/api/messages/{msg_id}", headers)
         checks.append(("read reflected", body["message"]["is_read"] is True, status, body))
 
-        # 7. settings (must include accounts)
+        # 7. settings (must include accounts + dynamic categories, no interval)
         status, body = await get("/api/settings", headers)
         ok = (
             status == 200
             and body["settings"]["language"] == "ru"
-            and body["settings"]["polling_interval_seconds"] == 300
+            and "polling_interval_seconds" not in body["settings"]
             and "promo" in body["settings"]["muted_categories"]
+            and body["settings"]["categories"] == ["important", "social", "other"]
             and len(body["settings"]["accounts"]) == 2
         )
         checks.append(("settings", ok, status, body))
 
-        # 8. PATCH settings — interval is ignored (automatic-only);
-        #    response must include accounts (contract fix)
+        # 8. PATCH settings — interval is ignored (fixed 10s); response must
+        #    include accounts (contract fix)
         status, body = await patch(
             "/api/settings",
             {"language": "en", "polling_interval_seconds": 60, "muted_categories": ["spam"]},
@@ -204,11 +205,22 @@ async def main() -> None:
         ok = (
             status == 200
             and body["settings"]["language"] == "en"
-            and body["settings"]["polling_interval_seconds"] == 300  # ignored
+            and "polling_interval_seconds" not in body["settings"]
             and body["settings"]["muted_categories"] == ["spam"]
             and len(body["settings"]["accounts"]) == 2
         )
         checks.append(("PATCH settings (interval ignored, accounts present)", ok, status, body))
+
+        # 8b. OAuth start from the Mini App returns a signed auth URL
+        status, body = await post(
+            "/api/oauth/start", {"provider": "gmail"}, headers
+        )
+        ok = status == 200 and "auth_url" in body and "accounts.google.com" in body["auth_url"]
+        checks.append(("oauth/start returns auth url", ok, status, body))
+        status, body = await post(
+            "/api/oauth/start", {"provider": "dropbox"}, headers
+        )
+        checks.append(("oauth/start rejects bad provider", status == 400, status, body))
 
         # 9. unauthorized without initData
         status, body = await get("/api/accounts")

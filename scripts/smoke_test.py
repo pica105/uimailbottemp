@@ -98,10 +98,10 @@ async def _db_scenario(db: Database) -> None:
 
     await db.update_settings(42, muted_categories=["promo"])
     settings_row = await db.get_settings(42)
-    # The polling interval is automatic-only (elastic 10s..5min): it must
-    # not be changeable through the settings API.
-    assert settings_row["polling_interval_seconds"] == 300
+    # No polling-interval setting is exposed: the interval is fixed at 10s.
+    assert "polling_interval_seconds" not in settings_row
     assert settings_row["muted_categories"] == ["promo"]
+    assert settings_row["categories"] == ["important", "social", "other"]
 
     acc = await db.add_account(
         42, "gmail", "alice@gmail.com", encrypt("tok"), encrypt("ref"), 9999999999
@@ -133,8 +133,34 @@ async def _db_scenario(db: Database) -> None:
         subject="New connection", snippet="", body_text="",
         category="social", received_at=1100,
     )
+    # Custom provider labels become categories and show up in settings.
+    custom_inserted = await db.upsert_message(
+        acc["id"], "gmail-trip",
+        sender_name="Travel", sender_email="travel@example.com",
+        subject="Your trip", snippet="", body_text="",
+        category="trip", received_at=1150,
+    )
+    assert custom_inserted is True
+    assert "trip" in await db.get_user_categories(42)
+    assert [m["category"] for m in await db.get_messages(acc["id"], category="trip")] == ["trip"]
+    assert [m["category"] for m in await db.get_messages(acc["id"])] == [
+        "trip", "social", "important",
+    ]
+    # Muted senders hide messages from the list and can be removed.
+    hidden_inserted = await db.upsert_message(
+        acc["id"], "gmail-spam", sender_name="Spammer",
+        sender_email="spammer@example.com", subject="Ad", snippet="",
+        body_text="", category="important", received_at=1050,
+    )
+    assert hidden_inserted is True
+    await db.add_muted_sender(42, "Spammer@Example.COM")
+    assert await db.get_muted_senders(42) == ["spammer@example.com"]
+    filtered = await db.get_messages(
+        acc["id"], muted_senders=["spammer@example.com"]
+    )
+    assert all(m["sender_email"] != "spammer@example.com" for m in filtered)
+    assert await db.delete_messages_from_sender(42, "spammer@example.com") == 1
     assert social_inserted is True
-    assert [m["category"] for m in await db.get_messages(acc["id"])] == ["social", "important"]
 
     promo_inserted = await db.upsert_message(
         acc["id"], "promo-1", sender_name="Promo", sender_email="promo@example.com",
@@ -142,6 +168,12 @@ async def _db_scenario(db: Database) -> None:
     )
     assert promo_inserted is True
     assert all(m["category"] != "promo" for m in await db.get_messages(acc["id"]))
+
+    # A duplicate (case-variant) email must never create a second account.
+    dup_acc = await db.add_account(
+        42, "gmail", "ALICE@gmail.COM", encrypt("tok"), encrypt("ref"), 0,
+    )
+    assert dup_acc["id"] == acc["id"]
 
     await db.mark_read(messages[0]["id"])
     fetched = await db.get_message(messages[0]["id"])
@@ -319,6 +351,15 @@ def test_gmail_helpers() -> None:
     name, email = sync_gmail._split_sender('"John Doe" <john@example.com>')
     assert name == "John Doe" and email == "john@example.com"
     assert sync_gmail._split_sender("bare@example.com") == (None, "bare@example.com")
+    # User labels surface as custom categories; built-in labels do not.
+    assert sync_gmail._category_from_labels(["INBOX", "UNREAD", "Trip 2026"]) == "trip-2026"
+    assert sync_gmail._category_from_labels(["INBOX", "CATEGORY_SOCIAL"]) == "social"
+    assert sync_gmail._category_from_labels(["INBOX"]) == "important"
+    # Label_<id> resolves through the fetched label-names map.
+    names = {"Label_5": "Trip", "Label_9": "Работа"}
+    assert sync_gmail._category_from_labels(["INBOX", "Label_5"], names) == "trip"
+    assert sync_gmail._category_from_labels(["INBOX", "Label_9"], names) == "работа"
+    assert sync_gmail._category_from_labels(["INBOX", "Label_5"]) == "important"
     print("  ✓ gmail helpers")
 
 
@@ -362,62 +403,63 @@ def test_yandex_parsing() -> None:
     print("  ✓ yandex message parsing (decoding + html fallback)")
 
 
-def test_adaptive_interval() -> None:
-    """Elastic polling: 10s on fresh mail, proportional growth, 5 min cap.
-    Fully automatic — a manual setting must not influence it."""
-    from mailhub.sync_engine import _adaptive_interval
+def test_fixed_poll_interval() -> None:
+    """Polling is fixed at 10 seconds per account from addition."""
+    from mailhub.config import settings as cfg
+    from mailhub.sync_engine import fixed_poll_interval
 
-    async def scenario() -> None:
-        db = Database(":memory:")
-        await db.connect()
-        now = int(time.time())
-        counter = 0
+    assert cfg.POLL_FIXED_SECONDS == 10
+    assert fixed_poll_interval() == 10
+    print("  ✓ fixed polling interval (10s, from account addition)")
 
-        async def make_account() -> dict:
-            # One account per scenario: MAX(received_at) drives the gap.
-            nonlocal counter
-            counter += 1
-            await db.get_or_create_user(counter + 1000)
-            return await db.add_account(
-                counter + 1000, "yandex", f"elastic{counter}@yandex.ru",
-                encrypt("t"), encrypt("r"), 0,
-            )
 
-        async def add_msg(acc: dict, msg_id: str, received_at: int) -> None:
-            await db.upsert_message(
-                acc["id"], msg_id, sender_name="A", sender_email="a@b.c",
-                subject="s", snippet="", body_text="b", category="important",
-                received_at=received_at,
-            )
+def test_notification_builder() -> None:
+    """Rich notification: plain header, inline hyperlinks, bare-URL
+    shortening, 250-char preview collapse, and image extraction."""
+    from mailhub.bot_handlers import build_notification, notification_keyboard
+    from mailhub.html_email import convert_body, shorten_url_display
 
-        # No mail imported yet → maximum pace (5 min).
-        acc = await make_account()
-        assert await _adaptive_interval(db, acc) == 300
+    assert shorten_url_display("https://a.co/x") == "a.co/x"
+    assert shorten_url_display("https://www.example.com/very/long/url") == "www.examp..."
 
-        # Fresh mail (20s old) → floor of 10s.
-        acc = await make_account()
-        await add_msg(acc, "yandex-1", now - 20)
-        assert await _adaptive_interval(db, acc) == 10
+    html = (
+        "<p>Hello <a href=\"https://example.com/x\">there</a>!</p>"
+        "<p>Check https://www.example.com/some/very/long/path now</p>"
+        "<img src=\"https://cdn.example.com/pic.png\">"
+    )
+    text, image = convert_body(html, None, None)
+    assert image == "https://cdn.example.com/pic.png"
+    assert "<a href=\"https://example.com/x\">there</a>" in text
+    assert "www.examp..." in text
 
-        # Idle 20 minutes → 120s (gap // 10).
-        acc = await make_account()
-        await add_msg(acc, "yandex-2", now - 1200)
-        assert await _adaptive_interval(db, acc) == 120
+    msg = {
+        "id": 9,
+        "sender_name": "SpaceXAI",
+        "sender_email": "noreply@x.ai",
+        "subject": "New login",
+        "body_text": "*Time:* Mon, 3 Aug 2026 15:33:52 +0000\n*IP:* 89.105.200.140",
+        "body_html": None,
+    }
+    text, image, truncated = build_notification(msg)
+    assert text.startswith("✉️ SpaceXAI")
+    assert "New login" in text
+    assert "89.105.200.140" in text
+    assert image is None and truncated is False
 
-        # Idle 2 hours → capped at 300s (5 minutes).
-        acc = await make_account()
-        await add_msg(acc, "yandex-3", now - 7200)
-        assert await _adaptive_interval(db, acc) == 300
+    long_body = "word " * 120
+    long_msg = {**msg, "body_text": long_body}
+    _text, _image, truncated = build_notification(long_msg)
+    assert truncated is True
+    assert len(_text) <= 260
 
-        # A manual setting on the account must be ignored (automatic-only).
-        assert await _adaptive_interval(
-            db, {**acc, "polling_interval_seconds": 60}
-        ) == 300
-
-        await db.close()
-
-    asyncio.run(scenario())
-    print("  ✓ elastic polling interval (10s → 300s, auto-only, reset on new mail)")
+    kb = notification_keyboard(9, "ru", "gmail", truncated=True)
+    assert [len(row) for row in kb.inline_keyboard] == [2, 1]
+    kb_actions = notification_keyboard(
+        9, "ru", "yandex", actions=True,
+        sender_email="noreply@x.ai", provider_message_id="yandex-7",
+    )
+    assert [len(row) for row in kb_actions.inline_keyboard] == [1, 1, 3]
+    print("  ✓ rich notification builder (links, preview, buttons)")
 
 
 if __name__ == "__main__":
@@ -431,5 +473,6 @@ if __name__ == "__main__":
     test_oauth_urls()
     test_gmail_helpers()
     test_yandex_parsing()
-    test_adaptive_interval()
+    test_fixed_poll_interval()
+    test_notification_builder()
     print("\nAll smoke tests passed ✅")

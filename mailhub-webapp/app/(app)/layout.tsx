@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useSyncExternalStore } from "react";
+import { ReactNode, useEffect, useRef, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Inbox, Settings as SettingsIcon } from "lucide-react";
@@ -8,6 +8,7 @@ import { AccountSwitcher } from "@/components/layout/AccountSwitcher";
 import { OutsideTelegram } from "@/components/OutsideTelegram";
 import { useTelegram } from "@/hooks/useTelegram";
 import { useT } from "@/lib/i18n";
+import { useAppStore } from "@/stores/appStore";
 import { cn } from "@/lib/utils";
 
 function useClientReady() {
@@ -18,12 +19,29 @@ function useClientReady() {
   );
 }
 
+function tabKey(pathname: string): "inbox" | "settings" {
+  return pathname.startsWith("/settings") ? "settings" : "inbox";
+}
+
 export default function AppLayout({ children }: { children: ReactNode }) {
   const { t } = useT();
   const pathname = usePathname();
   const { isTelegram: telegramReady } = useTelegram();
-  // Detect Telegram only after hydration to avoid SSR/client mismatch.
   const clientReady = useClientReady();
+  const prevTab = useRef(tabKey(pathname));
+
+  // Preserve the scroll position when switching between Inbox and Settings
+  // so returning to a category/account lands exactly where it was.
+  useEffect(() => {
+    const current = tabKey(pathname);
+    const previous = prevTab.current;
+    if (previous !== current) {
+      useAppStore.getState().setScroll(previous, window.scrollY);
+      const saved = useAppStore.getState().scroll[current];
+      window.requestAnimationFrame(() => window.scrollTo(0, saved ?? 0));
+      prevTab.current = current;
+    }
+  }, [pathname]);
 
   if (clientReady && !telegramReady) {
     return <OutsideTelegram />;
@@ -33,11 +51,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     <div className="mx-auto flex min-h-dvh w-full max-w-xl flex-col px-4 pb-24 pt-[calc(env(safe-area-inset-top)+1rem)]">
       <header className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <div className="glow-icon flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
             <Inbox className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-base font-bold leading-tight">{t("app.title")}</h1>
+            <h1 className="glow text-base font-bold leading-tight">{t("app.title")}</h1>
             <p className="text-xs text-muted-foreground">{t("app.tagline")}</p>
           </div>
         </div>
@@ -63,8 +81,22 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 : "text-muted-foreground",
             )}
           >
-            <Inbox className="h-5 w-5" />
-            {t("nav.inbox")}
+            <Inbox
+              className={cn(
+                "h-5 w-5",
+                pathname.startsWith("/inbox") || pathname.startsWith("/message")
+                  ? "glow-icon"
+                  : "",
+              )}
+            />
+            <span
+              className={cn(
+                (pathname.startsWith("/inbox") || pathname.startsWith("/message")) &&
+                  "glow-soft",
+              )}
+            >
+              {t("nav.inbox")}
+            </span>
           </Link>
           <Link
             href="/settings"
@@ -73,8 +105,19 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               pathname.startsWith("/settings") ? "text-primary" : "text-muted-foreground",
             )}
           >
-            <SettingsIcon className="h-5 w-5" />
-            {t("nav.settings")}
+            <SettingsIcon
+              className={cn(
+                "h-5 w-5",
+                pathname.startsWith("/settings") ? "glow-icon" : "",
+              )}
+            />
+            <span
+              className={cn(
+                pathname.startsWith("/settings") && "glow-soft",
+              )}
+            >
+              {t("nav.settings")}
+            </span>
           </Link>
         </div>
       </nav>

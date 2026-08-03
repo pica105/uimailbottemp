@@ -20,13 +20,14 @@ import hmac
 import json
 import logging
 import re
+import secrets
 import time
 from html import escape, unescape
 from urllib.parse import parse_qs, urlsplit
 
 from aiohttp import web
 
-from .bot_handlers import i18n
+from .bot_handlers import build_oauth_url, i18n
 from .config import settings
 from .crypto import encrypt
 from .database import Database, SUPPRESSED_NOTIFICATION_CATEGORIES
@@ -155,6 +156,7 @@ def _public_message(msg: dict) -> dict:
         "subject": msg["subject"],
         "snippet": msg["snippet"],
         "body_text": msg["body_text"],
+        "body_html": msg.get("body_html"),
         "category": msg["category"],
         "received_at": msg["received_at"],
         "is_read": bool(msg["is_read"]),
@@ -336,8 +338,10 @@ async def api_account_messages(request: web.Request) -> web.Response:
         offset = max(0, int(request.query.get("offset", "0")))
     except (TypeError, ValueError):
         return web.json_response({"error": "invalid_pagination"}, status=400)
+    muted_senders = await db.get_muted_senders(telegram_id)
     messages = await db.get_messages(
-        account_id, category=category, limit=limit + 1, offset=offset
+        account_id, category=category, limit=limit + 1, offset=offset,
+        muted_senders=muted_senders,
     )
     has_more = len(messages) > limit
     return web.json_response({
@@ -357,6 +361,9 @@ async def api_message(request: web.Request) -> web.Response:
         return web.json_response({"error": "not_found"}, status=404)
     account = await db.get_account(msg["account_id"])
     if account is None or account["user_id"] != telegram_id:
+        return web.json_response({"error": "not_found"}, status=404)
+    muted = await db.get_muted_senders(telegram_id)
+    if (msg.get("sender_email") or "").lower() in {s.lower() for s in muted}:
         return web.json_response({"error": "not_found"}, status=404)
     return web.json_response({"message": _public_message(msg)})
 
@@ -390,6 +397,29 @@ async def api_get_settings(request: web.Request) -> web.Response:
     return web.json_response({"settings": settings_row})
 
 
+async def api_oauth_start(request: web.Request) -> web.Response:
+    """Create an OAuth state from inside the Mini App and return the auth URL.
+
+    Lets the user connect an account without leaving the Mini App: the app
+    opens the returned URL, the provider redirects back to the backend, and
+    the account becomes visible on the next accounts fetch.
+    """
+    db: Database = request.app["db"]
+    telegram_id = await _get_telegram_id(request)
+    if telegram_id <= 0:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    provider = body.get("provider")
+    if provider not in ("gmail", "yandex"):
+        return web.json_response({"error": "invalid_provider"}, status=400)
+    state = secrets.token_urlsafe(32)
+    await db.save_oauth_state(state, telegram_id, provider)
+    return web.json_response({"auth_url": build_oauth_url(provider, state)})
+
+
 async def api_update_settings(request: web.Request) -> web.Response:
     db: Database = request.app["db"]
     telegram_id = await _get_telegram_id(request)
@@ -403,15 +433,13 @@ async def api_update_settings(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid_language"}, status=400)
 
     # polling_interval_seconds is intentionally ignored: the interval is
-    # fully automatic (elastic 10s..5min) and not user-configurable.
+    # fixed at 10 seconds from account addition and not user-configurable.
 
     muted = body.get("muted_categories")
     if muted is not None and not isinstance(muted, list):
         return web.json_response({"error": "invalid_muted"}, status=400)
-    if muted is not None:
-        valid = {"promo", "spam", "social", "other"}
-        if any(c not in valid for c in muted):
-            return web.json_response({"error": "invalid_muted"}, status=400)
+    if muted is not None and any(not isinstance(c, str) or not c for c in muted):
+        return web.json_response({"error": "invalid_muted"}, status=400)
 
     updated = await db.update_settings(
         telegram_id,
@@ -437,6 +465,7 @@ def create_app(db: Database, bot=None) -> web.Application:
 
     app.router.add_get("/api/accounts", api_accounts)
     app.router.add_delete("/api/accounts/{id}", api_delete_account)
+    app.router.add_post("/api/oauth/start", api_oauth_start)
     app.router.add_get("/api/accounts/{id}/messages", api_account_messages)
     app.router.add_get("/api/messages/{id}", api_message)
     app.router.add_post("/api/messages/{id}/read", api_mark_read)

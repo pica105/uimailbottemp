@@ -11,6 +11,7 @@ Token exchange / refresh use the standard Google OAuth2 token endpoint.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 import aiohttp
@@ -31,6 +32,14 @@ GMAIL_CATEGORY_MAP = {
     "CATEGORY_UPDATES": "other",
     "CATEGORY_FORUMS": "other",
 }
+
+# Built-in Gmail labels are never treated as user categories.
+SYSTEM_LABELS = frozenset({
+    "INBOX", "UNREAD", "IMPORTANT", "STARRED", "SENT", "DRAFT", "SPAM",
+    "TRASH", "CHAT", "SENT_MAIL", "UNSENT", "DRAFT_MAIL",
+    "CATEGORY_PERSONAL", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL",
+    "CATEGORY_UPDATES", "CATEGORY_FORUMS",
+})
 
 
 class GmailApiError(Exception):
@@ -189,28 +198,68 @@ def _extract_header(headers: list[dict], name: str) -> str:
     return ""
 
 
-def _decode_body(payload: dict) -> str:
-    """Best-effort extraction of a plain-text body from a Gmail payload."""
+def _decode_body(payload: dict) -> tuple[str, str]:
+    """Best-effort extraction of (plain_text, html) from a Gmail payload."""
     import base64
 
-    def _walk(node: dict) -> str:
+    text = ""
+    html = ""
+
+    def _decode(raw: str) -> str:
+        try:
+            return base64.urlsafe_b64decode(raw.encode()).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _walk(node: dict) -> None:
+        nonlocal text, html
         mime = node.get("mimeType", "")
-        if mime == "text/plain" and node.get("body", {}).get("data"):
-            raw = node["body"]["data"]
-            try:
-                return base64.urlsafe_b64decode(raw.encode()).decode("utf-8", "replace")
-            except Exception:  # noqa: BLE001
-                return ""
+        data = node.get("body", {}).get("data")
+        if mime == "text/plain" and data and not text:
+            text = _decode(data)
+        elif mime == "text/html" and data and not html:
+            html = _decode(data)
         for part in node.get("parts", []):
-            text = _walk(part)
-            if text:
-                return text
-        return ""
+            _walk(part)
 
-    return _walk(payload)
+    _walk(payload)
+    return text, html
 
 
-def message_to_record(message: dict) -> dict:
+def _category_from_labels(labels: list[str], label_names: dict[str, str] | None = None) -> str:
+    """Built-in Gmail categories first; otherwise the first user label is
+    surfaced as the message's category (e.g. a custom 'Trip' label).
+
+    Gmail reports user labels as ``Label_<id>``; the readable name comes
+    from users.labels.list (fetched once per sync).
+    """
+    for label in labels:
+        if label in GMAIL_CATEGORY_MAP:
+            return GMAIL_CATEGORY_MAP[label]
+    for label in labels:
+        if label in SYSTEM_LABELS:
+            continue
+        name = (label_names or {}).get(label)
+        if name is None and label.startswith("Label_"):
+            # Unresolved system-encoded label: do not show a raw id slug.
+            continue
+        source = name or label
+        slug = re.sub(r"[^a-zA-Z0-9\u0400-\u04FF-]+", "-", source.lower()).strip("-")
+        if slug:
+            return slug[:30]
+    return "important"
+
+
+async def fetch_label_names(session: aiohttp.ClientSession, access_token: str) -> dict[str, str]:
+    """Map Gmail label ids to human-readable names (users.labels.list)."""
+    try:
+        data = await _get(session, access_token, f"{GMAIL_API}/labels")
+    except GmailApiError:
+        return {}
+    return {item["id"]: item.get("name", item["id"]) for item in data.get("labels", [])}
+
+
+def message_to_record(message: dict, label_names: dict[str, str] | None = None) -> dict:
     """Convert a Gmail message resource into a messages_cache row dict."""
     payload = message.get("payload", {})
     headers = payload.get("headers", [])
@@ -220,11 +269,8 @@ def message_to_record(message: dict) -> dict:
     sender_name, sender_email = _split_sender(sender)
 
     labels = message.get("labelIds", [])
-    category = "important"
-    for label in labels:
-        if label in GMAIL_CATEGORY_MAP:
-            category = GMAIL_CATEGORY_MAP[label]
-            break
+    category = _category_from_labels(labels, label_names)
+    body_text, body_html = _decode_body(payload)
 
     return {
         "provider_message_id": message["id"],
@@ -232,7 +278,8 @@ def message_to_record(message: dict) -> dict:
         "sender_email": sender_email,
         "subject": _extract_header(headers, "Subject") or "(no subject)",
         "snippet": message.get("snippet", ""),
-        "body_text": _decode_body(payload),
+        "body_text": body_text or None,
+        "body_html": body_html or None,
         "category": category,
         "received_at": received_at,
         "is_read": "UNREAD" not in labels,
@@ -295,10 +342,11 @@ async def sync_account(
             by_id.update({message["id"]: message for message in unread})
             messages = list(by_id.values())
 
+        label_names = await fetch_label_names(session, access_token)
         new_count = 0
         for msg in messages:
             full = await fetch_message_full(access_token, msg["id"])
-            record = message_to_record(full)
+            record = message_to_record(full, label_names)
             inserted = await db.upsert_message(account["id"], **record)
             if not inserted:
                 cached = await db._fetchone(
@@ -317,6 +365,22 @@ async def sync_account(
     finally:
         if own_session:
             await session.close()
+
+
+async def delete_message(account: dict, provider_message_id: str) -> None:
+    """Permanently delete a message from the Gmail mailbox."""
+    access_token = decrypt(account["encrypted_access_token"])
+    url = f"{GMAIL_API}/messages/{provider_message_id}"
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(
+            url, headers={"Authorization": f"Bearer {access_token}"}
+        ) as resp:
+            if resp.status in (200, 204):
+                return
+            body = await resp.text()
+            raise GmailApiError(
+                f"delete {provider_message_id} -> {resp.status}: {body[:200]}"
+            )
 
 
 async def mark_message_read(account: dict, provider_message_id: str) -> None:

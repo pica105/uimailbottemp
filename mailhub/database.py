@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
     polling_interval_seconds INTEGER NOT NULL DEFAULT 300
         CHECK(polling_interval_seconds BETWEEN 10 AND 1800),
     muted_categories TEXT NOT NULL DEFAULT '[]',
+    muted_senders TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -60,7 +61,10 @@ CREATE TABLE IF NOT EXISTS messages_cache (
     subject TEXT,
     snippet TEXT,
     body_text TEXT,
-    category TEXT NOT NULL CHECK(category IN ('important', 'promo', 'spam', 'social', 'other')),
+    body_html TEXT,
+    -- category is a free-form string: built-in buckets (important, promo,
+    -- spam, social, other) plus provider user labels surfaced as categories
+    category TEXT NOT NULL,
     received_at TIMESTAMP NOT NULL,
     is_read BOOLEAN NOT NULL DEFAULT 0,
     notified_at TIMESTAMP,
@@ -106,14 +110,34 @@ class Database:
         # database and prevents every account/update query from working.
         await self._repair_user_foreign_keys()
 
-        # Existing VPS databases used a CHECK constraint without `social`.
-        # Rebuild only that cache table in-place, preserving all cached rows.
+        await self._migrate_messages_cache()
+        await self._ensure_column(
+            "mail_accounts", "unread_bootstrap_done", "BOOLEAN NOT NULL DEFAULT 0"
+        )
+        await self._ensure_column("users", "muted_senders", "TEXT NOT NULL DEFAULT '[]'")
+        await self._conn.commit()
+
+    async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        """Add a column in-place when the deployed database predates it."""
+        columns = await self._conn.execute_fetchall(f"PRAGMA table_info({table})")
+        if not any(row[1] == column for row in columns):
+            await self._conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"
+            )
+
+    async def _migrate_messages_cache(self) -> None:
+        """Rebuild messages_cache when its DDL no longer matches the current
+        schema (dropped category CHECK + new body_html column), preserving
+        every cached row. Also adds body_html when the table already matches."""
         table_sql = await self._fetchone(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_cache'"
         )
-        if table_sql and "'social'" not in (table_sql["sql"] or ""):
+        ddl = (table_sql or {}).get("sql") or ""
+        if "CHECK(category" in ddl:
             await self._conn.execute("PRAGMA foreign_keys = OFF")
-            await self._conn.execute("ALTER TABLE messages_cache RENAME TO messages_cache_legacy")
+            await self._conn.execute(
+                "ALTER TABLE messages_cache RENAME TO messages_cache_legacy"
+            )
             await self._conn.execute(
                 """CREATE TABLE messages_cache (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,7 +148,8 @@ class Database:
                     subject TEXT,
                     snippet TEXT,
                     body_text TEXT,
-                    category TEXT NOT NULL CHECK(category IN ('important', 'promo', 'spam', 'social', 'other')),
+                    body_html TEXT,
+                    category TEXT NOT NULL,
                     received_at TIMESTAMP NOT NULL,
                     is_read BOOLEAN NOT NULL DEFAULT 0,
                     notified_at TIMESTAMP,
@@ -135,11 +160,11 @@ class Database:
             await self._conn.execute(
                 """INSERT INTO messages_cache
                    (id, account_id, provider_message_id, sender_name, sender_email,
-                    subject, snippet, body_text, category, received_at, is_read,
-                    notified_at, created_at)
+                    subject, snippet, body_text, body_html, category, received_at,
+                    is_read, notified_at, created_at)
                    SELECT id, account_id, provider_message_id, sender_name, sender_email,
-                          subject, snippet, body_text, category, received_at, is_read,
-                          notified_at, created_at
+                          subject, snippet, body_text, NULL, category, received_at,
+                          is_read, notified_at, created_at
                    FROM messages_cache_legacy"""
             )
             await self._conn.execute("DROP TABLE messages_cache_legacy")
@@ -147,16 +172,8 @@ class Database:
             await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_category ON messages_cache(category)")
             await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_received ON messages_cache(received_at)")
             await self._conn.execute("PRAGMA foreign_keys = ON")
-
-        # Existing VPS databases were created before unread bootstrap existed.
-        # Add the column in-place so deployment needs no destructive migration.
-        columns = await self._conn.execute_fetchall("PRAGMA table_info(mail_accounts)")
-        if not any(row[1] == "unread_bootstrap_done" for row in columns):
-            await self._conn.execute(
-                "ALTER TABLE mail_accounts ADD COLUMN unread_bootstrap_done "
-                "BOOLEAN NOT NULL DEFAULT 0"
-            )
-        await self._conn.commit()
+            return
+        await self._ensure_column("messages_cache", "body_html", "TEXT")
 
     async def _repair_user_foreign_keys(self) -> None:
         """Rebuild tables that reference a deleted ``users_old`` table.
@@ -322,18 +339,35 @@ class Database:
             (language, telegram_id),
         )
 
+    async def get_user_categories(self, user_id: int) -> list[str]:
+        """Categories visible to the user: built-in buckets plus any custom
+        provider labels that appeared in their cached mail (union across all
+        connected accounts). Re-fetched on every settings open."""
+        rows = await self._fetchall(
+            """SELECT DISTINCT mc.category AS category
+               FROM messages_cache mc
+               JOIN mail_accounts a ON a.id = mc.account_id
+               WHERE a.user_id = ? AND mc.category NOT IN ('promo', 'spam')
+               ORDER BY mc.category""",
+            (user_id,),
+        )
+        defaults = ["important", "social", "other"]
+        return list(dict.fromkeys(defaults + [r["category"] for r in rows]))
+
     async def get_settings(self, telegram_id: int) -> dict:
         user = await self.get_user(telegram_id)
         if user is None:
             return {
                 "language": "en",
-                "polling_interval_seconds": 300,
                 "muted_categories": [],
+                "muted_senders": [],
+                "categories": ["important", "social", "other"],
             }
         return {
             "language": user["language"],
-            "polling_interval_seconds": user["polling_interval_seconds"],
             "muted_categories": json.loads(user["muted_categories"] or "[]"),
+            "muted_senders": json.loads(user["muted_senders"] or "[]"),
+            "categories": await self.get_user_categories(telegram_id),
         }
 
     async def update_settings(
@@ -342,8 +376,8 @@ class Database:
         language: str | None = None,
         muted_categories: list[str] | None = None,
     ) -> dict:
-        """Update user settings. The polling interval is deliberately NOT
-        user-configurable: it is fully automatic (elastic 10s..5min)."""
+        """Update user settings. The polling interval is NOT user-configurable:
+        it is fixed at 10 seconds from account addition."""
         fields: list[str] = []
         params: list[Any] = []
         if language is not None:
@@ -359,6 +393,26 @@ class Database:
             )
         return await self.get_settings(telegram_id)
 
+    async def get_muted_senders(self, telegram_id: int) -> list[str]:
+        user = await self.get_user(telegram_id)
+        if user is None:
+            return []
+        return json.loads(user["muted_senders"] or "[]")
+
+    async def add_muted_sender(self, telegram_id: int, email: str) -> None:
+        """Hide all mail from a sender (lower-cased) for this user."""
+        email = email.strip().lower()
+        if not email:
+            return
+        muted = await self.get_muted_senders(telegram_id)
+        if email in muted:
+            return
+        muted.append(email)
+        await self._execute(
+            "UPDATE users SET muted_senders = ? WHERE telegram_id = ?",
+            (json.dumps(muted), telegram_id),
+        )
+
     # ------------------------------------------------------------------
     # Mail accounts
     # ------------------------------------------------------------------
@@ -371,8 +425,11 @@ class Database:
         encrypted_refresh_token: str,
         token_expires_at: int | None = None,
     ) -> dict:
+        # Normalize to lowercase so the same mailbox can never be stored twice
+        # with different casing (the unique index is byte-sensitive).
+        email = email.strip().lower()
         await self._execute(
-            """INSERT INTO mail_accounts
+            """INSERT OR IGNORE INTO mail_accounts
                (user_id, provider, email, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, next_sync_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -410,7 +467,7 @@ class Database:
         return await self._fetchall(
             """SELECT a.*, u.language AS user_language,
                       u.muted_categories AS user_muted_categories,
-                      u.polling_interval_seconds AS polling_interval_seconds,
+                      u.muted_senders AS user_muted_senders,
                       u.telegram_id AS user_telegram_id
                FROM mail_accounts a
                JOIN users u ON u.telegram_id = a.user_id
@@ -472,16 +529,18 @@ class Database:
     async def update_message_from_provider(
         self, message_id: int, *, is_read: bool, category: str, received_at: int,
         sender_name: str | None, sender_email: str | None, subject: str | None,
-        snippet: str | None, body_text: str | None, provider_message_id: str,
+        snippet: str | None, body_text: str | None, body_html: str | None = None,
+        provider_message_id: str = "",
     ) -> None:
         """Refresh a cached row when the provider returns it again."""
         await self._execute(
             """UPDATE messages_cache
                SET sender_name = ?, sender_email = ?, subject = ?, snippet = ?,
-                   body_text = ?, category = ?, received_at = ?, is_read = ?
+                   body_text = ?, body_html = ?, category = ?, received_at = ?,
+                   is_read = ?
                WHERE id = ?""",
-            (sender_name, sender_email, subject, snippet, body_text, category,
-             received_at, int(is_read), message_id),
+            (sender_name, sender_email, subject, snippet, body_text, body_html,
+             category, received_at, int(is_read), message_id),
         )
 
     async def schedule_next_sync(self, account_id: int, interval_seconds: int) -> None:
@@ -517,6 +576,7 @@ class Database:
         subject: str | None,
         snippet: str | None,
         body_text: str | None,
+        body_html: str | None = None,
         category: str,
         received_at: int,
         is_read: bool = False,
@@ -528,8 +588,9 @@ class Database:
         cur = await self._execute(
             """INSERT OR IGNORE INTO messages_cache
                (account_id, provider_message_id, sender_name, sender_email,
-                subject, snippet, body_text, category, received_at, is_read)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                subject, snippet, body_text, body_html, category, received_at,
+                is_read)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 account_id,
                 provider_message_id,
@@ -538,6 +599,7 @@ class Database:
                 subject,
                 snippet,
                 body_text,
+                body_html,
                 category,
                 received_at,
                 int(is_read),
@@ -551,15 +613,23 @@ class Database:
         category: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        muted_senders: list[str] | None = None,
     ) -> list[dict]:
         sql = "SELECT * FROM messages_cache WHERE account_id = ?"
         params: list[Any] = [account_id]
         sql += " AND category NOT IN ('promo', 'spam')"
-        if category and category in CATEGORIES:
+        if category:
             if category in SUPPRESSED_NOTIFICATION_CATEGORIES:
                 return []
             sql += " AND category = ?"
             params.append(category)
+        if muted_senders:
+            placeholders = ",".join("?" for _ in muted_senders)
+            sql += (
+                " AND (sender_email IS NULL OR LOWER(sender_email) NOT IN ("
+                + placeholders + "))"
+            )
+            params.extend(muted_senders)
         sql += " ORDER BY received_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         return await self._fetchall(sql, params)
@@ -626,6 +696,24 @@ class Database:
             "UPDATE messages_cache SET notified_at = ? WHERE id = ?",
             (self._now(), message_id),
         )
+
+    async def delete_message(self, message_id: int) -> bool:
+        cur = await self._execute(
+            "DELETE FROM messages_cache WHERE id = ?", (message_id,)
+        )
+        return cur.rowcount > 0
+
+    async def delete_messages_from_sender(self, user_id: int, email: str) -> int:
+        """Remove every cached message from a sender across all of the user's
+        accounts (used by the 'hide messages from <email>' action)."""
+        email = email.strip().lower()
+        cur = await self._execute(
+            """DELETE FROM messages_cache WHERE account_id IN (
+                   SELECT id FROM mail_accounts WHERE user_id = ?
+               ) AND LOWER(sender_email) = ?""",
+            (user_id, email),
+        )
+        return cur.rowcount
 
     async def mark_all_notified(self, account_id: int) -> None:
         """Mark every un-notified message of an account as notified.

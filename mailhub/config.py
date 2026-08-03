@@ -60,10 +60,13 @@ class Settings(BaseSettings):
     GMAIL_INITIAL_PAGE_SIZE: int = 50
     GMAIL_UNREAD_PAGE_SIZE: int = 50
 
-    # --- Elastic polling ------------------------------------------------
-    # Fully automatic per-account interval (not user-configurable):
-    #   - POLL_MIN_SECONDS: floor (poll this often right after new mail)
-    #   - POLL_MAX_SECONDS: cap of the automatic growth (5 minutes)
+    # --- Polling --------------------------------------------------------
+    # Fixed per-account interval (not user-configurable): every account is
+    # checked exactly POLL_FIXED_SECONDS after its last sync, starting from
+    # the moment it is added.
+    POLL_FIXED_SECONDS: int = 10
+    # Legacy constants kept for schema/back-compat; the engine only uses
+    # POLL_FIXED_SECONDS now.
     POLL_MIN_SECONDS: int = 10
     POLL_MAX_SECONDS: int = 300
 

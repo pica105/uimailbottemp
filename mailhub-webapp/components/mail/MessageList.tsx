@@ -47,6 +47,7 @@ export function MessageList() {
   const { t } = useT();
   const activeAccountId = useAppStore((s) => s.activeAccountId);
   const activeCategory = useAppStore((s) => s.activeCategory);
+  const setOpenMessage = useAppStore((s) => s.setOpenMessage);
 
   const { data: accountsData, isLoading: accountsLoading } = useAccounts();
   const hasAccounts = (accountsData?.accounts.length ?? 0) > 0;
@@ -56,7 +57,6 @@ export function MessageList() {
     isLoading,
     isError,
     refetch,
-    isFetching,
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
@@ -99,17 +99,13 @@ export function MessageList() {
 
   return (
     <div className="space-y-3">
-      {/* pull-to-refresh affordance */}
-      <button
-        type="button"
-        onClick={() => refetch()}
-        className="w-full text-center text-xs text-muted-foreground/70 transition-colors hover:text-primary cursor-pointer"
-        disabled={isFetching}
-      >
-        {isFetching ? "…" : "↓"}
-      </button>
       {messages.map((m, i) => (
-        <MessageRow key={m.id} message={m} index={i} />
+        <MessageRow
+          key={m.id}
+          message={m}
+          index={i}
+          onOpen={(id) => setOpenMessage(id)}
+        />
       ))}
       {hasNextPage && (
         <Button

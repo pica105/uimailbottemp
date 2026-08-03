@@ -6,10 +6,10 @@ Read and manage Gmail and Yandex mailboxes from inside Telegram. The bot deliver
 
 - **OAuth connect** for Gmail and Yandex, one tap in the chat
 - **New-mail notifications** to Telegram; Promo and Spam are always suppressed, with optional muting for other categories
-- **Mini App** (inside Telegram): inbox, category tabs (All / Important / Social / Other), message detail with body and Load more pagination
+- **Mini App** (inside Telegram): inbox, dynamic category tabs (built-in + your custom labels), message view with rich HTML, auto mark-as-read, white & dark themes
 - **Mark-as-read** that syncs back to the real mailbox (Gmail `modify`, Yandex `\Seen`)
-- **Elastic polling** per account (fully automatic): 10 s right after new mail, grows with idle time, caps at 5 min. A new message resets it to 10 s
-- **RU / EN**, native Telegram theme (light and dark)
+- **Fixed 10-second polling** per account, from the moment it is added (not user-configurable); errors back off exponentially
+- **RU / EN** with an in-app theme switcher (white / dark)
 
 ## How it works
 
@@ -28,7 +28,8 @@ Sync details:
 
 - **Gmail** — REST only. Bootstrap: latest 50 messages plus up to 50 latest unread messages (`is:unread in:inbox`). Then paginated `users.history` incremental sync; expired history IDs trigger a fresh bootstrap. Mark-as-read removes the `UNREAD` label (`messages.modify`).
 - **Yandex** — IMAP over XOAUTH2 (`aioimaplib`, `imap.yandex.ru:993`). UID-based incremental search plus one-time unread backfill, newest-first batches of 50. Mark-as-read issues `STORE +FLAGS (\Seen)`.
-- **Elastic interval** — `max(10 s, min(5 min, idle_seconds / 10))`, fully automatic per account (not user-configurable). Fresh mail → 10 s. Silent mailbox → grows toward the 5 min cap. Errors back off exponentially (`2^n × 60 s`, capped at 1 h).
+- **Fixed interval** — every account is re-checked exactly 10 seconds after its last successful sync (`POLL_FIXED_SECONDS`), from the moment it is added. Errors back off exponentially (`2^n × 60 s`, capped at 1 h).
+- **Rich notifications** — the email's own line structure, inline hyperlinks and the first inline image are preserved; long bodies collapse behind "↓ more" and inline actions let you hide a sender, open in the mailbox, mark read or delete.
 
 Frontend is a Next.js Mini App served from the same domain, authenticated by Telegram WebApp `initData` (HMAC-SHA256) on every API call.
 
@@ -166,7 +167,7 @@ mailhub/                  ← Python backend
 ├── crypto.py             # Fernet encrypt/decrypt
 ├── bot_handlers.py       # aiogram handlers, keyboards, i18n, notifications
 ├── oauth_server.py       # aiohttp: OAuth callbacks + Mini App API
-├── sync_engine.py        # background polling loop + elastic interval
+├── sync_engine.py        # background polling loop + fixed 10s interval
 ├── sync_gmail.py         # Gmail REST incremental sync
 ├── sync_yandex.py        # Yandex IMAP + XOAUTH2 sync
 ├── mark_read.py          # provider-side mark-as-read (best-effort)

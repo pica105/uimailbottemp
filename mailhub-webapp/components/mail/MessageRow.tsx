@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { motion } from "motion/react";
 import { useT } from "@/lib/i18n";
 import { avatarColor, cn, formatRelativeTime, initials } from "@/lib/utils";
@@ -11,12 +10,16 @@ import { Badge } from "@/components/ui/badge";
 interface Props {
   message: Message;
   index?: number;
+  /** Called instead of navigating; lets the inbox keep the message open. */
+  onOpen?: (id: number) => void;
 }
 
-export function MessageRow({ message, index = 0 }: Props) {
+export function MessageRow({ message, index = 0, onOpen }: Props) {
   const { t, language } = useT();
   const sender = message.sender_name || message.sender_email || "?";
   const seed = message.sender_email || sender;
+
+  const Comp = onOpen ? "button" : "div";
 
   return (
     <motion.div
@@ -24,11 +27,12 @@ export function MessageRow({ message, index = 0 }: Props) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, delay: Math.min(index * 0.03, 0.4) }}
     >
-      <Link
-        href={`/message/${message.id}`}
+      <Comp
+        type={Comp === "button" ? "button" : undefined}
+        onClick={onOpen ? () => onOpen(message.id) : undefined}
         className={cn(
-          "flex items-start gap-3 rounded-xl border border-border bg-card px-3 py-3 shadow-sm transition-all duration-200",
-          "hover:border-primary/30 hover:shadow-md active:scale-[0.99]",
+          "flex w-full items-start gap-3 rounded-xl border border-border bg-card px-3 py-3 text-left shadow-sm transition-all duration-200",
+          "hover:border-primary/30 hover:shadow-md active:scale-[0.99] cursor-pointer",
         )}
       >
         <Avatar className="mt-0.5 h-11 w-11">
@@ -39,8 +43,10 @@ export function MessageRow({ message, index = 0 }: Props) {
           <div className="flex items-baseline justify-between gap-2">
             <span
               className={cn(
-                "truncate text-base",
-                message.is_read ? "font-medium" : "font-semibold",
+                "truncate text-base transition-colors duration-300",
+                message.is_read
+                  ? "font-medium text-muted-foreground"
+                  : "font-semibold text-foreground",
               )}
             >
               {sender}
@@ -66,10 +72,16 @@ export function MessageRow({ message, index = 0 }: Props) {
           )}
         </div>
 
-        <Badge variant={message.category} className="mt-1 shrink-0">
+        <Badge
+          variant={message.category as never}
+          className={cn(
+            "mt-1 shrink-0 transition-opacity duration-300",
+            message.is_read && "opacity-40",
+          )}
+        >
           {t(`cat.${message.category}`)}
         </Badge>
-      </Link>
+      </Comp>
     </motion.div>
   );
 }

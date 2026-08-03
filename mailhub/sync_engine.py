@@ -3,8 +3,8 @@
 Runs inside the same asyncio process. Every SYNC_BASE_INTERVAL_SECONDS (5s)
 it looks for accounts whose next_sync_at has passed, syncs each provider,
 and sends Telegram notifications for newly inserted messages. Each account
-is scheduled with a fully automatic elastic interval (10s..5min). Failures
-are isolated per account and backed off exponentially.
+is re-checked on a fixed 10-second interval from the moment it is added.
+Failures are isolated per account and backed off exponentially.
 """
 
 from __future__ import annotations
@@ -141,24 +141,9 @@ async def _sync_account_with_retry(
         return False
 
 
-async def _adaptive_interval(db: Database, account: dict) -> int:
-    """Elastic per-account polling interval (fully automatic).
-
-    - fresh mail (newest message < 200s old) → POLL_MIN (10s)
-    - grows proportionally with idle time:   gap // 10
-    - capped at POLL_MAX (5 min)
-    - a new message resets it back to POLL_MIN automatically, because the
-      gap collapses to ~0
-
-    When no mail has ever been imported the maximum (5 min) is used.
-    The interval is NOT user-configurable by design.
-    """
-    cap = settings.POLL_MAX_SECONDS
-    last_at = await db.get_last_message_at(account["id"])
-    if last_at is None:
-        return cap
-    gap = max(0, int(time.time()) - int(last_at))
-    return max(settings.POLL_MIN_SECONDS, min(cap, gap // 10))
+def fixed_poll_interval() -> int:
+    """The fixed per-account polling interval: 10 seconds, always."""
+    return settings.POLL_FIXED_SECONDS
 
 
 async def _notify_new_messages(
@@ -175,6 +160,12 @@ async def _notify_new_messages(
         muted = json.loads(account.get("user_muted_categories") or "[]")
     except json.JSONDecodeError:
         muted = []
+    muted_senders: list[str] = []
+    try:
+        muted_senders = json.loads(account.get("user_muted_senders") or "[]")
+    except json.JSONDecodeError:
+        muted_senders = []
+    muted_senders_lower = {s.lower() for s in muted_senders}
 
     if skip_initial:
         # First import: cache all the mail but do not notify about it.
@@ -185,12 +176,18 @@ async def _notify_new_messages(
     lang = account.get("user_language") or "en"
 
     for msg in messages:
-        if msg["category"] in SUPPRESSED_NOTIFICATION_CATEGORIES or msg["category"] in muted:
+        sender = (msg.get("sender_email") or "").lower()
+        if (
+            msg["category"] in SUPPRESSED_NOTIFICATION_CATEGORIES
+            or msg["category"] in muted
+            or sender in muted_senders_lower
+        ):
             # Mark muted messages as notified so they're not re-sent later.
             await db.mark_notified(msg["id"])
             continue
         await send_new_mail_notification(
-            bot, db, account["user_telegram_id"], lang, msg
+            bot, db, account["user_telegram_id"], lang, msg,
+            provider=account["provider"],
         )
 
 
@@ -212,10 +209,12 @@ async def sync_loop(db: Database, bot: Bot, stop_event: asyncio.Event) -> None:
                             db, bot, account, skip_initial=was_empty
                         )
                         if ok:
-                            # The engine owns scheduling: poll fast while
-                            # mail is fresh, back off while it is idle.
-                            interval = await _adaptive_interval(db, account)
-                            await db.schedule_next_sync(account["id"], interval)
+                            # Fixed polling: every account is checked again
+                            # exactly 10 seconds after its last successful
+                            # sync, from the moment it is added.
+                            await db.schedule_next_sync(
+                                account["id"], fixed_poll_interval()
+                            )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - engine must keep running

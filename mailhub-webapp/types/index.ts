@@ -1,11 +1,14 @@
 export type Language = "ru" | "en";
 
-export type Category = "important" | "promo" | "spam" | "social" | "other";
+/** Categories are free-form: built-in buckets plus custom provider labels. */
+export type Category = string;
 export type CategoryFilter = "all" | Category;
-/** Promo/spam are kept for legacy settings/cache compatibility but hidden. */
-export type MutedCategory = "promo" | "spam" | "social" | "other";
+/** Promo/spam stay supported for legacy cache/settings rows but are hidden. */
+export type MutedCategory = Category;
 
 export type Provider = "gmail" | "yandex";
+
+export type ThemeMode = "white" | "dark";
 
 export interface Account {
   id: number;
@@ -23,6 +26,7 @@ export interface Message {
   subject: string;
   snippet: string;
   body_text: string | null;
+  body_html: string | null;
   category: Category;
   received_at: number;
   is_read: boolean;
@@ -30,8 +34,8 @@ export interface Message {
 
 export interface AppSettings {
   language: Language;
-  polling_interval_seconds: number;
   muted_categories: MutedCategory[];
+  categories: Category[];
   accounts: Account[];
 }
 
@@ -50,4 +54,8 @@ export interface MessageResponse {
 
 export interface SettingsResponse {
   settings: AppSettings;
+}
+
+export interface OAuthStartResponse {
+  auth_url: string;
 }

@@ -38,10 +38,14 @@ export function initials(name: string): string {
 
 const dateLocales = { ru, en: enUS } as const;
 
-/** Relative time: "5 min ago" / "5 мин назад" */
+/**
+ * Relative time: "~ 5 min ago" / "~ 5 мин назад".
+ * The wordy "около"/"about" prefix is always replaced with the "~" symbol.
+ */
 export function formatRelativeTime(timestamp: number, lang: Language): string {
   const date = new Date(timestamp * 1000);
-  return formatDistanceToNow(date, { addSuffix: true, locale: dateLocales[lang] });
+  const text = formatDistanceToNow(date, { addSuffix: true, locale: dateLocales[lang] });
+  return "~ " + text.replace(/^(около|about)\s+/i, "");
 }
 
 /** Full localized date for the message detail screen. */

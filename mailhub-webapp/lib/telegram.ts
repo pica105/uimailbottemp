@@ -34,6 +34,7 @@ interface TelegramWebAppLike {
   };
   onEvent?: (event: string, cb: () => void) => void;
   offEvent?: (event: string, cb: () => void) => void;
+  openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
 }
 
 declare global {
@@ -79,12 +80,16 @@ export function ready() {
   }
 }
 
+export type AppTheme = "white" | "dark";
+
 /**
  * Apply Telegram theme params as CSS variables on <html> and toggle the
  * `.dark` class so semantic tokens (see globals.css) pick them up.
- * Outside Telegram we follow the OS color scheme.
+ *
+ * The user's chosen Mini App theme wins: ``white`` or ``dark``. When no
+ * explicit theme is passed we follow the Telegram client / OS scheme.
  */
-export function applyTheme() {
+export function applyTheme(theme?: AppTheme) {
   const params = getThemeParams();
   const root = document.documentElement;
   const set = (name: string, value?: string) => {
@@ -101,8 +106,24 @@ export function applyTheme() {
   const webApp = getWebApp();
   const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
   const isDark =
-    webApp?.colorScheme === "dark" || (!webApp && prefersDark);
+    theme === "dark" ||
+    (!theme && (webApp?.colorScheme === "dark" || (!webApp && prefersDark)));
   root.classList.toggle("dark", isDark);
+  root.dataset.theme = isDark ? "dark" : "white";
+}
+
+/** Open an external URL inside Telegram (falls back to a new tab). */
+export function openLink(url: string) {
+  const webApp = getWebApp();
+  try {
+    if (webApp?.openLink) {
+      webApp.openLink(url);
+      return;
+    }
+  } catch {
+    /* fall through to window.open */
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 /** Register a callback that fires on theme changes. Returns unsubscribe. */

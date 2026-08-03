@@ -4,22 +4,21 @@ import { useEffect, useState } from "react";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Save, CheckCircle2 } from "lucide-react";
+import { CheckCircle2, Save } from "lucide-react";
 import { useSettings, useUpdateSettings } from "@/hooks/useMessages";
 import { useT } from "@/lib/i18n";
 import { useAppStore } from "@/stores/appStore";
 import type { Language } from "@/types";
-import { Button } from "@/components/ui/button";
+import { BlobButton } from "@/components/ui/blob-button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ThemeToggle } from "@/components/settings/ThemeToggle";
 import { LanguageSelector } from "@/components/settings/LanguageSelector";
-import { PollingInterval } from "@/components/settings/PollingInterval";
 import { MutedCategories } from "@/components/settings/MutedCategories";
-import { AccountsList } from "@/components/settings/AccountsList";
 
 const settingsSchema = z.object({
   language: z.enum(["ru", "en"]),
-  muted_categories: z.array(z.enum(["promo", "spam", "social", "other"])),
+  muted_categories: z.array(z.string()),
 });
 
 type SettingsForm = z.infer<typeof settingsSchema>;
@@ -39,7 +38,11 @@ export default function SettingsPage() {
     },
   });
 
-  // Hydrate the form when settings arrive.
+  const isDirty = form.formState.isDirty;
+  const muted = form.watch("muted_categories");
+  const categories = data?.settings.categories ?? [];
+
+  // Hydrate the form when settings arrive (categories re-fetch each open).
   useEffect(() => {
     if (data) {
       const s = data.settings;
@@ -60,7 +63,11 @@ export default function SettingsPage() {
       {
         onSuccess: () => {
           setSavedFlash(true);
-          setTimeout(() => setSavedFlash(false), 2000);
+          form.reset({
+            language: values.language,
+            muted_categories: values.muted_categories,
+          });
+          window.setTimeout(() => setSavedFlash(false), 2000);
         },
       },
     );
@@ -76,21 +83,21 @@ export default function SettingsPage() {
     );
   }
 
-  const muted = form.watch("muted_categories");
-
   return (
     <main className="space-y-4">
-      <h1 className="text-xl font-bold">{t("settings.title")}</h1>
+      <h1 className="glow text-xl font-bold">{t("settings.title")}</h1>
 
       <Card>
         <CardContent className="space-y-6 pt-5">
+          {/* Theme applies immediately, like the category switcher. */}
+          <ThemeToggle />
           <LanguageSelector
             value={form.watch("language") as Language}
             onChange={(lang) => form.setValue("language", lang, { shouldDirty: true })}
           />
-          <PollingInterval />
           <MutedCategories
             value={muted}
+            categories={categories}
             onChange={(cats) =>
               form.setValue("muted_categories", cats, { shouldDirty: true })
             }
@@ -98,17 +105,21 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Button
+      <BlobButton
         className="w-full"
         size="lg"
         onClick={form.handleSubmit(onSubmit)}
-        disabled={updateSettings.isPending}
+        disabled={updateSettings.isPending || !isDirty}
+        aria-disabled={!isDirty}
       >
         {savedFlash ? <CheckCircle2 /> : <Save />}
         {savedFlash ? t("settings.saved") : t("settings.save")}
-      </Button>
-
-      <AccountsList accounts={data?.settings.accounts ?? []} />
+      </BlobButton>
+      {!isDirty && (
+        <p className="text-center text-xs text-muted-foreground">
+          {t("settings.save_hint")}
+        </p>
+      )}
     </main>
   );
 }

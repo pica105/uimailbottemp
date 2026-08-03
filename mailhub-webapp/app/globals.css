@@ -1,50 +1,49 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------ */
-/* Design tokens — warm amber overlaid on Telegram theme params.       */
-/*                                                                     */
-/* lib/telegram.ts injects real Telegram values (--tg-*) as inline     */
-/* styles on <html> and toggles the `.dark` class based on the client  */
-/* color scheme. Every semantic token falls back to a warm value when  */
-/* running outside Telegram, so the app always looks intentional.      */
+/* Design tokens — orange accents over an explicitly white theme.     */
+/*                                                                    */
+/* applyTheme (lib/telegram.ts) toggles the `.dark` class based on    */
+/* the user's Mini App theme choice. Every semantic token has a       */
+/* hard-coded fallback so the app always looks intentional.           */
 /* ------------------------------------------------------------------ */
 :root {
-  /* Telegram runtime values (set by applyTheme) with warm fallbacks */
-  --background: var(--tg-bg, #fffbeb);
-  --foreground: var(--tg-text, #1c1917);
-  --card: var(--tg-secondary-bg, #ffffff);
-  --card-foreground: var(--tg-text, #1c1917);
-  --popover: var(--tg-secondary-bg, #ffffff);
-  --popover-foreground: var(--tg-text, #1c1917);
-  --muted: #fcf6f0;
-  --muted-foreground: var(--tg-hint, #78716c);
-  --accent: #fff1e0;
+  /* White theme */
+  --background: #ffffff;
+  --foreground: #1c1917;
+  --card: #ffffff;
+  --card-foreground: #1c1917;
+  --popover: #ffffff;
+  --popover-foreground: #1c1917;
+  --muted: #f6f5f3;
+  --muted-foreground: #78716c;
+  --accent: #fff3e0;
   --accent-foreground: #7c2d12;
   --primary: #d97706;
   --primary-foreground: #ffffff;
-  --secondary: #fca5a5;
-  --secondary-foreground: #7f1d1d;
+  --secondary: #fdba74;
+  --secondary-foreground: #7c2d12;
   --destructive: #dc2626;
   --destructive-foreground: #ffffff;
-  --border: #f3e8d9;
-  --input: #f3e8d9;
+  --border: #f0e8dd;
+  --input: #f0e8dd;
   --ring: #d97706;
   --radius: 1rem;
 
-  /* Fallbacks for the grid pattern when no Telegram theme is present */
-  --tg-bg: #fffbeb;
+  /* Telegram runtime hints (kept for reference, overridden above) */
+  --tg-bg: #ffffff;
   --tg-hint: #78716c;
 }
 
 .dark {
-  --background: var(--tg-bg, #181512);
-  --foreground: var(--tg-text, #f5f0e8);
-  --card: var(--tg-secondary-bg, #211d19);
-  --card-foreground: var(--tg-text, #f5f0e8);
-  --popover: var(--tg-secondary-bg, #211d19);
-  --popover-foreground: var(--tg-text, #f5f0e8);
+  --background: #181512;
+  --foreground: #f5f0e8;
+  --card: #211d19;
+  --card-foreground: #f5f0e8;
+  --popover: #211d19;
+  --popover-foreground: #f5f0e8;
   --muted: #2a251f;
-  --muted-foreground: var(--tg-hint, #a8a29e);
+  --muted-foreground: #a8a29e;
   --accent: #33291f;
   --accent-foreground: #fde68a;
   --primary: #f59e0b;
@@ -103,7 +102,8 @@ body {
 }
 
 /* ------------------------------------------------------------------ */
-/* Warm background: soft gradient + subtle grid fading at the bottom   */
+/* Warm background + orange grid (same color as the icons) in both     */
+/* themes                                                              */
 /* ------------------------------------------------------------------ */
 .app-bg {
   position: fixed;
@@ -111,23 +111,47 @@ body {
   z-index: -1;
   pointer-events: none;
   background:
-    linear-gradient(to bottom, rgba(255, 237, 213, 0.35), rgba(251, 191, 36, 0.06)),
+    linear-gradient(to bottom, rgba(255, 237, 213, 0.5), rgba(251, 191, 36, 0.05)),
     var(--background);
 }
 
 .dark .app-bg {
   background:
-    linear-gradient(to bottom, rgba(68, 51, 32, 0.4), rgba(24, 21, 18, 0.1)),
+    linear-gradient(to bottom, rgba(68, 51, 32, 0.45), rgba(24, 21, 18, 0.1)),
     var(--background);
 }
 
 .grid-bg {
   background-image:
-    linear-gradient(to right, var(--tg-hint) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--tg-hint) 1px, transparent 1px);
-  background-size: 40px 40px;
-  opacity: 0.03;
-  mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+    linear-gradient(to right, var(--primary) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--primary) 1px, transparent 1px);
+  background-size: 36px 36px;
+  opacity: 0.09;
+  mask-image: radial-gradient(ellipse at top, black 30%, transparent 78%);
+}
+
+.dark .grid-bg {
+  opacity: 0.14;
+}
+
+/* ------------------------------------------------------------------ */
+/* Glow: system labels and icons emit light of their own color        */
+/* ------------------------------------------------------------------ */
+.glow {
+  text-shadow:
+    0 0 12px color-mix(in srgb, currentColor 45%, transparent),
+    0 0 30px color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.glow-soft {
+  text-shadow:
+    0 0 10px color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.glow-icon {
+  filter:
+    drop-shadow(0 0 5px color-mix(in srgb, currentColor 55%, transparent))
+    drop-shadow(0 0 16px color-mix(in srgb, currentColor 22%, transparent));
 }
 
 /* ------------------------------------------------------------------ */
@@ -135,6 +159,26 @@ body {
 /* ------------------------------------------------------------------ */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* Soft "blob" squash on tap (used by BlobButton) */
+@keyframes bulk {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.07) translateY(-1px);
+  }
+  60% {
+    transform: scale(0.96);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.bulk-on-tap:active {
+  animation: bulk 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {

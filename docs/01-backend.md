@@ -22,7 +22,7 @@
 | `crypto.py` | Fernet encrypt/decrypt |
 | `bot_handlers.py` | aiogram: единая reply-навигация, legacy-команды, inline OAuth/уведомления, i18n |
 | `oauth_server.py` | aiohttp: OAuth-колбэки, REST API, проверка initData (HMAC-SHA256), auth diagnostics |
-| `sync_engine.py` | Фоновый цикл, эластичный интервал, бэкофф ошибок, нотификации |
+| `sync_engine.py` | Фоновый цикл, фиксированный интервал 10 с, бэкофф ошибок, нотификации |
 | `sync_gmail.py` | Gmail REST: инкрементальный синк, mark-read через `messages.modify` |
 | `sync_yandex.py` | Yandex IMAP XOAUTH2: UID-инкремент, STORE `\Seen` |
 | `mark_read.py` | Best-effort прокидывание «прочитано» в провайдера (fire-and-forget) |
@@ -34,7 +34,8 @@
 При старте `Database.connect()` выполняет только обратимые по данным проверки схемы:
 
 - добавляет `mail_accounts.unread_bootstrap_done` в старые базы;
-- расширяет CHECK-контракт `messages_cache` для категории `social`, сохраняя кэш;
+- пересоздаёт `messages_cache` без CHECK-ограничения на категорию (свободные категории: встроенные + пользовательские метки почты) и добавляет колонку `body_html`;
+- добавляет `users.muted_senders` (скрытые отправители);
 - исправляет прерванную миграцию, если `mail_accounts` или `oauth_states` всё ещё ссылаются на удалённую `users_old`; строки копируются в новые таблицы с `REFERENCES users`. После запуска миграцию можно проверить read-only командой `PRAGMA foreign_key_check`; regression-тест делает эту проверку автоматически.
 
 Перед обновлением production остановите `mailhub`, создайте gzip-копию SQLite и только после этого запускайте миграцию/сервис. Для read-only проверки production используйте `sqlite3.connect("file:/uimailbot/mailhub.db?mode=ro", uri=True)` и `PRAGMA foreign_key_check`; regression smoke fixture не заменяет эту проверку. Не удаляйте исходную базу вручную.
@@ -89,7 +90,7 @@ journalctl -u mailhub --since '15 min ago' --no-pager \
 - Bootstrap: `messages.list` (последние 50) + до 50 последних непрочитанных (`is:unread in:inbox`) + `users.getProfile` → стартовый `historyId`
 - Дальше: все страницы `users.history` от checkpoint'а (`historyTypes=messageAdded`), дедупликация по id
 - Если Gmail вернул устаревший history id (404), выполняется новый bootstrap вместо долгого backoff
-- Полное тело: `messages.get` (format=full), парсинг payload → text/plain
+- Полное тело: `messages.get` (format=full), парсинг payload → text/plain + text/html (для богатых уведомлений)
 
 **Яндекс (IMAP):**
 - `imap.yandex.ru:993`, XOAUTH2 через нативный `xoauth2()` (aioimaplib 2.x)
@@ -97,14 +98,7 @@ journalctl -u mailhub --since '15 min ago' --no-pager \
 - Для старых аккаунтов один раз выполняется `uid_search("UNSEEN")`, чтобы восстановить свежие непрочитанные письма; флаг хранится в `mail_accounts.unread_bootstrap_done`
 - `BODY.PEEK[]` (не меняет флаг), разбор MIME (RFC 2047-заголовки, HTML→текст)
 
-**Эластичный интервал (на аккаунт):**
-
-```text
-interval = max(POLL_MIN, min(POLL_MAX, idle_seconds // 10))
-POLL_MIN = 10с, POLL_MAX = 300с
-```
-
-Интервал полностью автоматический, ручная настройка отсутствует. Свежее письмо → 10 с. Тихий ящик → рост к потолку (5 мин). Ошибки: `next_sync_at = now + min(2^n * 60, 3600)`.
+**Фиксированный интервал (на аккаунт):** `POLL_FIXED_SECONDS = 10`. Каждый аккаунт проверяется ровно через 10 секунд после успешного синка, начиная с момента подключения. Ручная настройка отсутствует и нигде не показывается. Ошибки: `next_sync_at = now + min(2^n * 60, 3600)`.
 
 **Mark-read:** API/бот ставят `is_read` локально и через `mark_read.py` (фоновая задача) отправляют в провайдер: Gmail `messages.modify` (`removeLabelIds: ["UNREAD"]`), Яндекс `STORE +FLAGS (\Seen)`. Провайдер-фейл не ломает локальный ответ. Для Gmail нужен scope `gmail.modify` — старые токены (readonly) дают 403, нужно переподключить аккаунт.
 
@@ -131,6 +125,7 @@ GET    /api/messages/{id}
 POST   /api/messages/{id}/read
 GET    /api/settings
 PATCH  /api/settings
+POST   /api/oauth/start   # из Mini App: создаёт state и возвращает auth_url провайдера
 ```
 
 OAuth callbacks — отдельный browser redirect flow, который использует сохранённый

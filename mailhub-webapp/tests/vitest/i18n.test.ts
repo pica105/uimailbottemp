@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { translate } from "@/lib/i18n";
+import { sanitizeHtml } from "@/lib/sanitize";
 import { avatarColor, formatRelativeTime, initials } from "@/lib/utils";
 
 describe("i18n translate", () => {
@@ -50,5 +51,27 @@ describe("formatRelativeTime", () => {
   it("formats relative time in English", () => {
     const result = formatRelativeTime(Math.floor(Date.now() / 1000) - 300, "en");
     expect(result).toMatch(/ago/i);
+  });
+
+  it("always prefixes relative time with the ~ symbol", () => {
+    const en = formatRelativeTime(Math.floor(Date.now() / 1000) - 300, "en");
+    expect(en.startsWith("~ ")).toBe(true);
+    expect(en).not.toMatch(/^about/i);
+    const ru = formatRelativeTime(Math.floor(Date.now() / 1000) - 300, "ru");
+    expect(ru.startsWith("~ ")).toBe(true);
+    expect(ru).not.toMatch(/^около/i);
+  });
+});
+
+describe("sanitizeHtml", () => {
+  it("strips scripts and event handlers but keeps links", () => {
+    const out = sanitizeHtml(
+      '<p>Hi <a href="https://x.com" onclick="evil()">link</a></p><script>alert(1)</script><img src="javascript:alert(1)">',
+    );
+    expect(out).toContain("<a");
+    expect(out).toContain("Hi");
+    expect(out).not.toContain("script");
+    expect(out).not.toContain("onclick");
+    expect(out).not.toContain("javascript:");
   });
 });
