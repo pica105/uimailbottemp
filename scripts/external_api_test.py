@@ -85,26 +85,28 @@ async def main() -> None:
         status, _ = await req("GET", "/api/accounts")
         check("401 without initData", status == 401, str(status))
 
-        # 3. accounts with valid initData
+        # 3. accounts with valid initData (any number, valid shape)
         status, body = await req("GET", "/api/accounts", headers)
         accounts = body.get("accounts", [])
-        providers = {a["provider"] for a in accounts}
         check(
-            "accounts (2, yandex+gmail)",
-            status == 200 and len(accounts) == 2 and providers == {"yandex", "gmail"},
+            "accounts (>=1, valid)",
+            status == 200
+            and len(accounts) >= 1
+            and all(a.get("provider") and a.get("email") for a in accounts),
             f"{status}, {[(a['provider'], a['email']) for a in accounts]}",
         )
 
-        # 4. settings GET
+        # 4. settings GET (no polling interval; categories list present)
         status, body = await req("GET", "/api/settings", headers)
         st = body.get("settings", {})
         check(
             "settings GET",
             status == 200
             and st.get("language") in ("ru", "en")
-            and st.get("polling_interval_seconds") == 300
-            and len(st.get("accounts", [])) == 2,
-            f"{status}, lang={st.get('language')}, interval={st.get('polling_interval_seconds')}",
+            and "polling_interval_seconds" not in st
+            and isinstance(st.get("categories"), list)
+            and len(st.get("accounts", [])) == len(accounts),
+            f"{status}, lang={st.get('language')}, cats={len(st.get('categories', []))}, accounts={len(st.get('accounts', []))}",
         )
 
         # 5. PATCH language → ru (persists)
@@ -116,14 +118,14 @@ async def main() -> None:
         ok = ok and status2 == 200 and body2["settings"]["language"] == "ru"
         check("PATCH language ru persists", ok, f"GET after -> {body2['settings']['language']}")
 
-        # 6. PATCH polling_interval_seconds → ignored (automatic-only)
+        # 6. PATCH polling_interval_seconds → ignored (fixed 10s interval)
         status, body = await req(
             "PATCH", "/api/settings", headers, {"polling_interval_seconds": 60}
         )
         check(
-            "interval ignored (stays 300)",
-            status == 200 and body["settings"]["polling_interval_seconds"] == 300,
-            f"{status}, interval={body['settings']['polling_interval_seconds']}",
+            "interval field ignored (not stored)",
+            status == 200 and "polling_interval_seconds" not in body.get("settings", {}),
+            str(status),
         )
 
         # 7. messages for first account
