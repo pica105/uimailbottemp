@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+from html import escape
 
 import aiohttp
 from aiogram import Bot
@@ -69,7 +70,7 @@ async def _deactivate_and_notify(db: Database, bot: Bot, account: dict) -> None:
     await db.set_account_active(account["id"], False)
     logger.warning("Account %s deactivated (token refresh failed)", account["email"])
     lang = account.get("user_language") or "en"
-    text = i18n.t(lang, "account_deactivated", email=account["email"])
+    text = i18n.t(lang, "account_deactivated", email=escape(account["email"]))
     try:
         await bot.send_message(account["user_telegram_id"], text)
     except Exception:  # noqa: BLE001

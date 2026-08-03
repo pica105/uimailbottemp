@@ -19,8 +19,9 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
-from html import escape
+from html import escape, unescape
 from urllib.parse import parse_qs, urlsplit
 
 from aiohttp import web
@@ -177,7 +178,11 @@ async def _handle_oauth_callback(request: web.Request) -> web.Response:
 
     if error or not code or not state:
         return web.Response(
-            text=i18n.t(lang, "oauth_failed", error=error or "missing code/state"),
+            text=i18n.t(
+                lang,
+                "oauth_failed",
+                error=escape(error or "missing code/state"),
+            ),
             content_type="text/html",
         )
 
@@ -199,7 +204,8 @@ async def _handle_oauth_callback(request: web.Request) -> web.Response:
     except Exception as exc:  # noqa: BLE001
         logger.exception("OAuth exchange failed for %s", provider)
         return web.Response(
-            text=i18n.t(lang, "oauth_failed", error=str(exc)), content_type="text/html"
+            text=i18n.t(lang, "oauth_failed", error=escape(str(exc))),
+            content_type="text/html",
         )
 
     refresh_token = tokens.get("refresh_token")
@@ -218,7 +224,7 @@ async def _handle_oauth_callback(request: web.Request) -> web.Response:
         await db.set_account_active(already["id"], True)
         # Resume syncing immediately after re-authorization (clears backoff).
         await db.schedule_next_sync(already["id"], 0)
-        text = i18n.t(lang, "account_already_connected", email=email_address)
+        text = i18n.t(lang, "account_already_connected", email=escape(email_address))
     else:
         await db.add_account(
             user_id,
@@ -228,7 +234,7 @@ async def _handle_oauth_callback(request: web.Request) -> web.Response:
             encrypt(refresh_token or ""),
             expires_at,
         )
-        text = i18n.t(lang, "account_connected", email=email_address)
+        text = i18n.t(lang, "account_connected", email=escape(email_address))
 
     await db.delete_oauth_state(state)
 
@@ -240,11 +246,15 @@ async def _handle_oauth_callback(request: web.Request) -> web.Response:
         except Exception:  # noqa: BLE001
             logger.exception("Failed to notify user %s about connected account", user_id)
 
+    # The Telegram message intentionally contains safe HTML markup. For the
+    # browser callback page, strip that presentation markup first, then escape
+    # the resulting plain text so provider-controlled values stay inert.
+    browser_text = unescape(re.sub(r"<[^>]+>", "", text))
     html = (
         "<html><body style='font-family:system-ui;display:flex;align-items:center;"
         "justify-content:center;height:100vh;margin:0;background:#FFF7ED'>"
         "<div style='text-align:center'><h1 style='color:#D97706'>✅</h1>"
-        f"<p style='color:#444'>{escape(text)}</p>"
+        f"<p style='color:#444'>{escape(browser_text)}</p>"
         "<p style='color:#999'>You can close this tab and return to Telegram.</p>"
         "</div></body></html>"
     )
