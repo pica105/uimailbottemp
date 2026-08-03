@@ -465,6 +465,19 @@ def test_notification_builder() -> None:
     assert "<a href=\"https://example.com/x\">there</a>" in text
     assert "www.examp..." in text
 
+    # Paragraph boundaries and blank lines survive (no more wall of text).
+    assert "\n\n" in text
+    para, _ = convert_body("<p>One</p><p>Two</p>", None, None)
+    assert para == "One\n\nTwo"
+    blank, _ = convert_body(None, "First\n\nSecond\n\n\nThird")
+    assert blank == "First\n\nSecond\n\nThird"
+    # Leading indentation is kept via non-breaking spaces.
+    indented, _ = convert_body(None, "    item\n  sub")
+    assert "\u00a0\u00a0\u00a0\u00a0item\n\u00a0\u00a0sub" in indented
+    # <pre> blocks keep their line structure.
+    pre, _ = convert_body("<pre>  code\n  more</pre>", None, None)
+    assert "\u00a0\u00a0code\n\u00a0\u00a0more" in pre
+
     msg = {
         "id": 9,
         "sender_name": "SpaceXAI",
@@ -484,6 +497,22 @@ def test_notification_builder() -> None:
     _text, _image, truncated = build_notification(long_msg)
     assert truncated is True
     assert len(_text) <= 260
+
+    # The expanded view is hard-capped so in-place edits never exceed
+    # Telegram's message (4096) / media caption (1024) limits — otherwise
+    # "↓ more" would fail silently on long mail.
+    from mailhub.bot_handlers import (
+        MAX_FULL_CAPTION_CHARS,
+        MAX_FULL_CHARS,
+    )
+
+    huge_msg = {**msg, "body_text": "word " * 2000}
+    full_text = build_notification(huge_msg, force_truncated=False)[0]
+    assert len(full_text) <= MAX_FULL_CHARS + 2
+    caption_text = build_notification(
+        huge_msg, force_truncated=False, full_max_chars=MAX_FULL_CAPTION_CHARS
+    )[0]
+    assert len(caption_text) <= MAX_FULL_CAPTION_CHARS + 2
 
     kb = notification_keyboard(9, "ru", "gmail", state="trunc")
     assert [len(row) for row in kb.inline_keyboard] == [2, 1]

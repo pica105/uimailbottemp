@@ -40,6 +40,11 @@ LOCALES_DIR = Path(__file__).resolve().parent / "locales"
 
 # Notification preview length: longer bodies are collapsed behind "↓ more".
 MAX_PREVIEW_CHARS = 250
+# Hard caps for the expanded (full) view. Telegram text messages hold up to
+# 4096 characters, but media captions only 1024 — exceeding either makes the
+# in-place edit fail silently, so "↓ more" would appear dead on long mail.
+MAX_FULL_CHARS = 4000
+MAX_FULL_CAPTION_CHARS = 950
 
 
 class I18n:
@@ -187,7 +192,9 @@ def configure_menu_button(lang: str = "en") -> MenuButtonWebApp:
 # Notification builders
 # ---------------------------------------------------------------------------
 def build_notification(
-    message: dict, force_truncated: bool | None = None
+    message: dict,
+    force_truncated: bool | None = None,
+    full_max_chars: int = MAX_FULL_CHARS,
 ) -> tuple[str, str | None, bool]:
     """Return (html_text, first_image_url, was_truncated).
 
@@ -198,6 +205,8 @@ def build_notification(
     ``force_truncated`` pins the preview to its collapsed form so the
     in-place edits (actions/back/less) can reproduce the exact text the user
     currently sees instead of round-tripping the message through Telegram.
+    ``full_max_chars`` caps the expanded view (media captions are limited to
+    1024 characters by Telegram, text messages to 4096).
     """
     sender_name = message.get("sender_name") or ""
     sender_email = message.get("sender_email") or ""
@@ -222,6 +231,8 @@ def build_notification(
     )
     if truncated:
         body = render_segments(segments, max(20, MAX_PREVIEW_CHARS - header_len))
+    elif full_max_chars and header_len + visible_len(full_body) > full_max_chars:
+        body = render_segments(segments, max(20, full_max_chars - header_len))
     else:
         body = full_body
     return header + body, image, truncated
@@ -637,14 +648,30 @@ def register_handlers(router: Router, db: Database) -> None:
         state = parts[3] if len(parts) >= 4 else "full"
         return state if state in ("full", "trunc", "exp") else "full"
 
-    def _notification_text_for_state(msg: dict, state: str) -> str:
+    def _notification_text_for_state(
+        msg: dict, state: str, full_max_chars: int = MAX_FULL_CHARS
+    ) -> str:
         """Rebuild the notification text the user currently sees from the DB.
 
         Rebuilding instead of re-sending the message text read back from
         Telegram avoids HTML parse errors (Telegram strips tags/entities
         when it stores the message, so round-tripping would corrupt it).
         """
-        return build_notification(msg, force_truncated=(state == "trunc"))[0]
+        if state == "trunc":
+            return build_notification(msg, force_truncated=True)[0]
+        return build_notification(
+            msg, force_truncated=False, full_max_chars=full_max_chars
+        )[0]
+
+    def _display_cap(call: CallbackQuery) -> int:
+        """Max characters the current message can hold when edited.
+
+        Media notifications carry the text in the caption (1024-char limit);
+        plain text messages hold up to 4096 chars.
+        """
+        if getattr(call.message, "caption", None) is not None:
+            return MAX_FULL_CAPTION_CHARS
+        return MAX_FULL_CHARS
 
     async def _edit_text_or_caption(message: Message, text: str, reply_markup) -> None:
         """Edit a notification message in place (text or media caption).
@@ -681,7 +708,7 @@ def register_handlers(router: Router, db: Database) -> None:
         state = _callback_state(call)
         await _edit_text_or_caption(
             call.message,
-            _notification_text_for_state(msg, state),
+            _notification_text_for_state(msg, state, _display_cap(call)),
             notification_keyboard(
                 msg["id"], lang, account["provider"], actions=True, state=state,
                 sender_email=msg.get("sender_email"),
@@ -701,7 +728,7 @@ def register_handlers(router: Router, db: Database) -> None:
         state = _callback_state(call)
         await _edit_text_or_caption(
             call.message,
-            _notification_text_for_state(msg, state),
+            _notification_text_for_state(msg, state, _display_cap(call)),
             notification_keyboard(
                 msg["id"], lang, account["provider"], state=state,
             ),
@@ -718,7 +745,9 @@ def register_handlers(router: Router, db: Database) -> None:
             return
         await _edit_text_or_caption(
             call.message,
-            build_notification(msg)[0],
+            build_notification(
+                msg, force_truncated=False, full_max_chars=_display_cap(call)
+            )[0],
             notification_keyboard(msg["id"], lang, account["provider"], state="exp"),
         )
         await call.answer()

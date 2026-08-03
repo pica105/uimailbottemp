@@ -121,17 +121,23 @@ body {
     var(--background);
 }
 
+/* Grid layer sits INSIDE .app-bg (see app/layout.tsx) so its background
+   image can never be overridden by the .app-bg shorthand — the shorthand
+   would otherwise win the cascade on dark theme and hide the grid. */
 .grid-bg {
+  position: absolute;
+  inset: 0;
   background-image:
     linear-gradient(to right, var(--primary) 1px, transparent 1px),
     linear-gradient(to bottom, var(--primary) 1px, transparent 1px);
   background-size: 36px 36px;
   opacity: 0.09;
+  -webkit-mask-image: radial-gradient(ellipse at top, black 30%, transparent 78%);
   mask-image: radial-gradient(ellipse at top, black 30%, transparent 78%);
 }
 
 .dark .grid-bg {
-  opacity: 0.14;
+  opacity: 0.16;
 }
 
 /* ------------------------------------------------------------------ */

@@ -25,16 +25,21 @@ _URL_SPLIT_RE = re.compile(
 )
 _TRAILING_PUNCT = "),.;:!?\\]}\"'"
 
-_BLOCK_TAGS = {
-    "p", "div", "tr", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6",
+# Paragraph-level elements: each boundary becomes a blank line in Telegram
+# ("\n\n"), giving emails visible section spacing instead of a wall of text.
+_PARAGRAPH_TAGS = {
+    "p", "div", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6",
     "table", "ul", "ol", "section", "article", "header", "footer", "hr",
     "dl", "dd", "dt", "pre",
 }
+# Compact row/inline-level elements: a single line break between them.
+_LINE_TAGS = {"li", "tr", "td", "th"}
 
 # (kind, ...) segment kinds:
 #   ("text", value)
 #   ("link", href, display)
-#   ("nl",)
+#   ("nl",)        — single line break (source line end / <br> / list row)
+#   ("p",)         — paragraph break (block boundary → blank line)
 Segment = tuple
 
 
@@ -85,9 +90,11 @@ class _BodyParser(HTMLParser):
         self._skip_depth = 0
         self._a_href: str | None = None
         self._a_buffer: list[str] = []
+        self._in_pre = False
 
     # -- helpers --------------------------------------------------------
     def _emit_text(self, text: str) -> None:
+        """Emit a regular text node, preserving any leading indentation."""
         text = text.replace("\r\n", " ").replace("\n", " ")
         text = re.sub(r"[ \t]+", " ", text)
         if not text.strip():
@@ -98,9 +105,27 @@ class _BodyParser(HTMLParser):
                     ("link", _normalize_url(value), shorten_url_display(value))
                 )
             else:
-                stripped = value.strip()
-                if stripped:
-                    self.segments.append(("text", stripped + (" " if value.endswith(" ") else "")))
+                lead = len(value) - len(value.lstrip(" \u00a0"))
+                core = value.strip()
+                if not core:
+                    continue
+                trailing = " " if value.endswith(" ") else ""
+                self.segments.append(("text", value[:lead] + core + trailing))
+
+    def _emit_pre(self, text: str) -> None:
+        """Emit a <pre> text node: line breaks and spacing kept as authored."""
+        text = text.replace("\r\n", "\n")
+        if not text.strip():
+            return
+        for line in text.split("\n"):
+            for kind, value in _split_urls(line):
+                if kind == "url":
+                    self.segments.append(
+                        ("link", _normalize_url(value), shorten_url_display(value))
+                    )
+                elif value.strip():
+                    self.segments.append(("text", value))
+            self.segments.append(("nl",))
 
     def _emit_link(self, href: str, display: str) -> None:
         href = _normalize_url(href)
@@ -112,8 +137,14 @@ class _BodyParser(HTMLParser):
         self.segments.append(("link", href, display))
 
     def _append_newline(self) -> None:
-        if self.segments and self.segments[-1] != ("nl",):
-            self.segments.append(("nl",))
+        if self.segments and self.segments[-1] in (("nl",), ("p",)):
+            return
+        self.segments.append(("nl",))
+
+    def _append_paragraph(self) -> None:
+        if self.segments and self.segments[-1] in (("nl",), ("p",)):
+            return
+        self.segments.append(("p",))
 
     # -- parser callbacks ----------------------------------------------
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -136,7 +167,13 @@ class _BodyParser(HTMLParser):
         if tag == "br":
             self._append_newline()
             return
-        if tag in _BLOCK_TAGS:
+        if tag == "pre":
+            self._in_pre = True
+            self._append_paragraph()
+            return
+        if tag in _PARAGRAPH_TAGS:
+            self._append_paragraph()
+        elif tag in _LINE_TAGS:
             self._append_newline()
 
     def handle_endtag(self, tag: str) -> None:
@@ -150,9 +187,22 @@ class _BodyParser(HTMLParser):
             self._a_href = None
             self._a_buffer = []
             return
+        if tag == "pre":
+            self._in_pre = False
+            self._append_paragraph()
+            return
+        # Closing a block element also starts a new line so adjacent
+        # paragraphs (</p><p>…) produce a real paragraph break.
+        if tag in _PARAGRAPH_TAGS:
+            self._append_paragraph()
+        elif tag in _LINE_TAGS:
+            self._append_newline()
 
     def handle_data(self, data: str) -> None:
         if self._skip_depth:
+            return
+        if self._in_pre:
+            self._emit_pre(data)
             return
         if self._a_href is not None:
             self._a_buffer.append(data)
@@ -199,17 +249,35 @@ def visible_len(html: str) -> int:
     return len(re.sub(r"<[^>]+>", "", html))
 
 
+def _nobreak_leading(text: str) -> str:
+    """Convert a leading run of regular spaces to non-breaking spaces so
+    Telegram (which collapses consecutive spaces) keeps the indentation."""
+    m = re.match(r"^ +", text)
+    if not m:
+        return text
+    return "\u00a0" * len(m.group(0)) + text[m.end():]
+
+
 def render_segments(segments: list[Segment], max_chars: int | None = None) -> str:
     """Render segments to a Telegram-safe HTML string, truncating at
-    ``max_chars`` visible characters without cutting inside a tag."""
+    ``max_chars`` visible characters without cutting inside a tag.
+
+    Paragraph structure is preserved: blank lines in the source stay as
+    blank lines in the output (Telegram renders \n\n as a paragraph gap),
+    and leading indentation is kept via non-breaking spaces.
+    """
     out: list[str] = []
     visible = 0
     truncated = False
 
     for seg in segments:
-        if seg[0] == "nl":
-            if out and not out[-1].endswith("\n") and not out[-1].endswith(" "):
+        if seg[0] in ("nl", "p"):
+            # A line break, or a paragraph break (blank line). Runs of both
+            # are collapsed to at most "\n\n" by the final cleanup.
+            if out:
                 out.append("\n")
+                if seg[0] == "p":
+                    out.append("\n")
             continue
         if max_chars is not None and visible >= max_chars:
             truncated = True
@@ -225,7 +293,7 @@ def render_segments(segments: list[Segment], max_chars: int | None = None) -> st
                 text = text[:remaining].rstrip()
                 truncated = True
             if text:
-                out.append(_html.escape(text))
+                out.append(_html.escape(_nobreak_leading(text)))
                 visible += len(text)
         elif seg[0] == "link":
             href, display = seg[1], seg[2]
@@ -245,6 +313,10 @@ def render_segments(segments: list[Segment], max_chars: int | None = None) -> st
             break
 
     if truncated:
+        # Drop trailing line breaks so the ellipsis sits right after the text.
+        out = [s.rstrip("\n") for s in out]
+        while out and not out[-1]:
+            out.pop()
         out.append("…")
 
     text = "".join(out)

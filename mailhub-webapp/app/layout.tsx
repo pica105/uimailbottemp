@@ -29,7 +29,9 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-dvh antialiased">
-        <div className="app-bg grid-bg" aria-hidden />
+        <div className="app-bg" aria-hidden>
+          <div className="grid-bg" aria-hidden />
+        </div>
         <Providers>{children}</Providers>
       </body>
     </html>
