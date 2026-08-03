@@ -44,7 +44,8 @@ export function BlobButton({
     <motion.button
       className={cn(
         buttonVariants({ variant, size, className }),
-        "will-change-transform",
+        // System text (labels/icons) emits light of its own color.
+        "glow-soft will-change-transform",
       )}
       whileTap={{ scale: 0.94 }}
       animate={controls}

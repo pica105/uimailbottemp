@@ -13,6 +13,11 @@ interface AppState {
   scroll: { inbox: number; settings: number };
   /** Saved scroll of the open message detail panel. */
   detailScrollY: number;
+  /**
+   * Message to highlight in the inbox list (set when closing a directly
+   * opened message; the list scrolls to it and flashes it a few times).
+   */
+  highlightMessageId: number | null;
   setLanguage: (lang: Language) => void;
   setTheme: (theme: ThemeMode) => void;
   setActiveAccount: (id: number | null) => void;
@@ -20,6 +25,7 @@ interface AppState {
   setOpenMessage: (id: number | null) => void;
   setScroll: (key: "inbox" | "settings", y: number) => void;
   setDetailScrollY: (y: number) => void;
+  setHighlightMessage: (id: number | null) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -32,6 +38,7 @@ export const useAppStore = create<AppState>()(
       openMessageId: null,
       scroll: { inbox: 0, settings: 0 },
       detailScrollY: 0,
+      highlightMessageId: null,
       setLanguage: (language) => set({ language }),
       setTheme: (theme) => set({ theme }),
       setActiveAccount: (activeAccountId) => set({ activeAccountId }),
@@ -40,9 +47,13 @@ export const useAppStore = create<AppState>()(
       setScroll: (key, y) =>
         set((s) => ({ scroll: { ...s.scroll, [key]: y } })),
       setDetailScrollY: (detailScrollY) => set({ detailScrollY }),
+      setHighlightMessage: (highlightMessageId) => set({ highlightMessageId }),
     }),
     {
       name: "mailhub-app",
+      // highlightMessageId is intentionally session-local: a highlight set
+      // when a directly-opened message is closed must not survive a Mini App
+      // relaunch (it would re-scroll/re-flash an old message next session).
       partialize: (s) => ({
         language: s.language,
         theme: s.theme,

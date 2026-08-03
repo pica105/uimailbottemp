@@ -1,18 +1,18 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "motion/react";
 import { Check, X } from "lucide-react";
 import { useMessage, useMarkRead } from "@/hooks/useMessages";
 import { useT } from "@/lib/i18n";
-import { sanitizeHtml } from "@/lib/sanitize";
 import { setupBackButton } from "@/lib/telegram";
 import { avatarColor, cn, formatFullDate, initials } from "@/lib/utils";
 import { useAppStore } from "@/stores/appStore";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { BlobButton } from "@/components/ui/blob-button";
+import { EmailBody } from "@/components/mail/EmailBody";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -20,40 +20,69 @@ interface Props {
   id: number;
   /** When set, renders as a full-screen overlay with a close button. */
   overlay?: boolean;
+  /**
+   * When set, renders as a standalone full-screen view (deep link from a
+   * Telegram notification). Header shows the category on the left and a
+   * close button on the right; closing returns to the inbox and highlights
+   * the message in the list.
+   */
+  standalone?: boolean;
   onClose?: () => void;
 }
 
-export function MessageDetail({ id, overlay = false, onClose }: Props) {
+export function MessageDetail({ id, overlay = false, standalone = false, onClose }: Props) {
   const { t, language } = useT();
   const router = useRouter();
   const { data, isLoading, isError } = useMessage(id);
   const markRead = useMarkRead();
   const scrollRef = useRef<HTMLDivElement>(null);
   const setDetailScrollY = useAppStore((s) => s.setDetailScrollY);
+  const setHighlightMessage = useAppStore((s) => s.setHighlightMessage);
 
   const message = data?.message;
 
-  // Wire Telegram BackButton: overlay close when in overlay mode.
-  useEffect(() => {
-    const handler = () => (onClose ? onClose() : router.back());
-    const cleanup = setupBackButton(handler);
-    return cleanup;
-  }, [router, onClose]);
+  const isFullscreen = overlay || standalone;
 
-  // Restore the saved detail scroll once the content is loaded.
-  useEffect(() => {
-    if (!message) return;
-    if (overlay && scrollRef.current) {
-      scrollRef.current.scrollTop = useAppStore.getState().detailScrollY;
+  const handleClose = useCallback(() => {
+    // Persist the detail scroll so re-opening (or returning from Settings)
+    // lands exactly where the user left off.
+    if (scrollRef.current) {
+      setDetailScrollY(scrollRef.current.scrollTop);
     }
-  }, [overlay, message]);
+    if (standalone) {
+      setHighlightMessage(id);
+      router.replace("/inbox");
+      return;
+    }
+    onClose?.();
+  }, [id, onClose, router, setDetailScrollY, setHighlightMessage, standalone]);
+
+  // Wire Telegram BackButton: fullscreen views close, standalone goes back
+  // to the inbox with the message highlighted.
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const cleanup = setupBackButton(handleClose);
+    return cleanup;
+  }, [isFullscreen, handleClose]);
+
+  // Restore the saved detail scroll once the content is loaded — exactly
+  // once per message. Without this guard the optimistic is_read flip (and
+  // the refetch after it) would re-trigger the restore and snap the panel
+  // back to the top while the user is reading.
+  const restoredFor = useRef<number | null>(null);
+  useEffect(() => {
+    if (!message || !isFullscreen || !scrollRef.current) return;
+    if (restoredFor.current === message.id) return;
+    restoredFor.current = message.id;
+    scrollRef.current.scrollTop = useAppStore.getState().detailScrollY;
+  }, [isFullscreen, message]);
 
   // Auto mark-as-read when the user scrolls to the end of the message.
   useEffect(() => {
     if (!message || message.is_read || markRead.isPending) return;
     const check = () => {
       if (message.is_read || markRead.isPending) return;
-      const atEnd = overlay
+      const atEnd = isFullscreen
         ? scrollRef.current &&
           scrollRef.current.scrollHeight - scrollRef.current.scrollTop -
             scrollRef.current.clientHeight <
@@ -66,15 +95,13 @@ export function MessageDetail({ id, overlay = false, onClose }: Props) {
     };
     // A short delay lets the layout settle before the first check.
     const timer = window.setTimeout(check, 400);
-    const target = overlay ? scrollRef.current : window;
+    const target = isFullscreen ? scrollRef.current : window;
     target?.addEventListener("scroll", check, { passive: true });
     return () => {
       window.clearTimeout(timer);
       target?.removeEventListener("scroll", check);
     };
-  }, [overlay, message, id, markRead, markRead.isPending]);
-
-  const richBody = message?.body_html ? sanitizeHtml(message.body_html) : "";
+  }, [isFullscreen, message, id, markRead, markRead.isPending]);
 
   if (isLoading) {
     return (
@@ -127,17 +154,10 @@ export function MessageDetail({ id, overlay = false, onClose }: Props) {
           <h2 className="mb-4 text-lg font-bold leading-snug">
             {message.subject}
           </h2>
-          {richBody ? (
-            <div
-              className="prose-sm break-words text-[15px] leading-relaxed text-foreground/90 [&_a]:text-primary [&_a]:underline [&_img]:max-w-full [&_img]:rounded-xl"
-              // Sanitized by sanitizeHtml: scripts/styles/events removed.
-              dangerouslySetInnerHTML={{ __html: richBody }}
-            />
-          ) : (
-            <div className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-foreground/90">
-              {message.body_text || message.snippet}
-            </div>
-          )}
+          <EmailBody
+            html={message.body_html ?? ""}
+            fallbackText={message.body_text || message.snippet}
+          />
         </CardContent>
       </Card>
 
@@ -166,18 +186,8 @@ export function MessageDetail({ id, overlay = false, onClose }: Props) {
     </div>
   );
 
-  if (!overlay) {
-    return (
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25 }}
-      >
-        {content}
-      </motion.div>
-    );
-  }
-
+  // Both call sites (inbox overlay and the deep-link page) render fullscreen;
+  // the overlay container is the only presentation for a message detail.
   return (
     <motion.div
       initial={{ opacity: 0, y: 24 }}
@@ -187,19 +197,23 @@ export function MessageDetail({ id, overlay = false, onClose }: Props) {
       className="fixed inset-0 z-50 flex flex-col bg-background"
     >
       <header className="flex items-center justify-between border-b border-border bg-background/90 px-4 py-3 backdrop-blur">
-        <span className="text-sm font-semibold text-muted-foreground">
-          {t("nav.inbox")}
-        </span>
+        {standalone ? (
+          <Badge
+            variant={message.category as never}
+            className="glow-soft"
+          >
+            {t(`cat.${message.category}`)}
+          </Badge>
+        ) : (
+          <span className="text-sm font-semibold text-muted-foreground">
+            {t("nav.inbox")}
+          </span>
+        )}
         <button
           type="button"
-          onClick={() => {
-            if (scrollRef.current) {
-              setDetailScrollY(scrollRef.current.scrollTop);
-            }
-            onClose?.();
-          }}
+          onClick={handleClose}
           className="flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent hover:text-foreground cursor-pointer"
-          aria-label="Close"
+          aria-label={t("nav.inbox")}
         >
           <X className="h-5 w-5" />
         </button>

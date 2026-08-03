@@ -3,6 +3,7 @@
 import { motion } from "motion/react";
 import { useT } from "@/lib/i18n";
 import { avatarColor, cn, formatRelativeTime, initials } from "@/lib/utils";
+import { useAppStore } from "@/stores/appStore";
 import type { Message } from "@/types";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -16,8 +17,10 @@ interface Props {
 
 export function MessageRow({ message, index = 0, onOpen }: Props) {
   const { t, language } = useT();
+  const highlightMessageId = useAppStore((s) => s.highlightMessageId);
   const sender = message.sender_name || message.sender_email || "?";
   const seed = message.sender_email || sender;
+  const isHighlighted = highlightMessageId === message.id;
 
   const Comp = onOpen ? "button" : "div";
 
@@ -29,10 +32,12 @@ export function MessageRow({ message, index = 0, onOpen }: Props) {
     >
       <Comp
         type={Comp === "button" ? "button" : undefined}
+        data-message-id={message.id}
         onClick={onOpen ? () => onOpen(message.id) : undefined}
         className={cn(
           "flex w-full items-start gap-3 rounded-xl border border-border bg-card px-3 py-3 text-left shadow-sm transition-all duration-200",
           "hover:border-primary/30 hover:shadow-md active:scale-[0.99] cursor-pointer",
+          isHighlighted && "row-flash",
         )}
       >
         <Avatar className="mt-0.5 h-11 w-11">
@@ -46,7 +51,7 @@ export function MessageRow({ message, index = 0, onOpen }: Props) {
                 "truncate text-base transition-colors duration-300",
                 message.is_read
                   ? "font-medium text-muted-foreground"
-                  : "font-semibold text-foreground",
+                  : "glow-soft font-semibold text-foreground",
               )}
             >
               {sender}
@@ -59,7 +64,9 @@ export function MessageRow({ message, index = 0, onOpen }: Props) {
           <p
             className={cn(
               "truncate text-sm",
-              message.is_read ? "text-muted-foreground" : "text-foreground font-medium",
+              message.is_read
+                ? "text-muted-foreground"
+                : "glow-soft text-foreground font-medium",
             )}
           >
             {message.subject}

@@ -38,7 +38,7 @@ export function MutedCategories({ value, categories, onChange }: Props) {
             key={cat}
             className="flex items-center justify-between rounded-lg px-2 py-1.5"
           >
-            <Label className="cursor-pointer">{t(`cat.${cat}`)}</Label>
+            <Label className="glow-soft cursor-pointer">{t(`cat.${cat}`)}</Label>
             <Switch
               checked={value.includes(cat)}
               onCheckedChange={(checked) => toggle(cat, checked)}

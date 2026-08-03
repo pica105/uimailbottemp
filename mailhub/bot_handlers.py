@@ -143,22 +143,35 @@ def confirm_unlink_keyboard(account_id: int, lang: str) -> InlineKeyboardMarkup:
 def settings_keyboard(
     lang: str, muted: list[str], categories: list[str]
 ) -> InlineKeyboardMarkup:
-    """Settings live in the bot: language (✓ = active) and per-category
-    mute toggles, plus a link to the Mini App."""
+    """Settings live in the bot.
+
+    Layout per the product instructions:
+      row 1 (width 2): language pair (✓ marks the active one)
+      row 2 (width 1): decorative blacklist row (no function yet)
+      rows  (width 2): category mute toggles, two per row
+      last:  when the category count is odd the leftover category shares
+             its row with "Open" (Mini App settings); otherwise "Open"
+             sits on its own row.
+    """
     builder = InlineKeyboardBuilder()
     ru_label = ("✓ " if lang == "ru" else "") + i18n.t("ru", "lang_name_ru")
     en_label = ("✓ " if lang == "en" else "") + i18n.t("en", "lang_name_en")
     builder.button(text=ru_label, callback_data="settings:lang:ru")
     builder.button(text=en_label, callback_data="settings:lang:en")
+    builder.button(
+        text=i18n.t(lang, "btn_blacklist"), callback_data="settings:blacklist"
+    )
     for cat in categories:
         checked = cat in muted
         label = f"{'✓ ' if checked else ''}{i18n.t(lang, f'category_{cat}')}"
         builder.button(text=label, callback_data=f"settings:mute:{cat}")
     builder.button(
-        text=i18n.t(lang, "open_mini_app"),
-        web_app=WebAppInfo(url=settings.MINI_APP_URL),
+        text=i18n.t(lang, "btn_open"),
+        web_app=WebAppInfo(url=f"{settings.MINI_APP_URL}/settings"),
     )
-    builder.adjust(2, *([1] * len(categories)), 1)
+    widths = [2, 1] + [2] * (len(categories) // 2)
+    widths += [2] if len(categories) % 2 == 1 else [1]
+    builder.adjust(*widths)
     return builder.as_markup()
 
 
@@ -173,12 +186,18 @@ def configure_menu_button(lang: str = "en") -> MenuButtonWebApp:
 # ---------------------------------------------------------------------------
 # Notification builders
 # ---------------------------------------------------------------------------
-def build_notification(message: dict) -> tuple[str, str | None, bool]:
+def build_notification(
+    message: dict, force_truncated: bool | None = None
+) -> tuple[str, str | None, bool]:
     """Return (html_text, first_image_url, was_truncated).
 
     Text layout follows the product example: the header is plain (envelope +
     raw sender line + subject), the body keeps its line structure with
     hyperlinks inline and bare URLs shortened.
+
+    ``force_truncated`` pins the preview to its collapsed form so the
+    in-place edits (actions/back/less) can reproduce the exact text the user
+    currently sees instead of round-tripping the message through Telegram.
     """
     sender_name = message.get("sender_name") or ""
     sender_email = message.get("sender_email") or ""
@@ -196,7 +215,11 @@ def build_notification(message: dict) -> tuple[str, str | None, bool]:
     )
     image = next((u for u in images if u.startswith(("https://", "http://"))), None)
     full_body = render_segments(segments, None)
-    truncated = header_len + visible_len(full_body) > MAX_PREVIEW_CHARS
+    truncated = (
+        force_truncated
+        if force_truncated is not None
+        else header_len + visible_len(full_body) > MAX_PREVIEW_CHARS
+    )
     if truncated:
         body = render_segments(segments, max(20, MAX_PREVIEW_CHARS - header_len))
     else:
@@ -209,13 +232,16 @@ def notification_keyboard(
     lang: str,
     provider: str,
     *,
-    truncated: bool = False,
-    expanded: bool = False,
+    state: str = "full",
     actions: bool = False,
     sender_email: str | None = None,
     provider_message_id: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Inline keyboard for a mail notification.
+
+    ``state`` is the current display state ("full"/"trunc"/"exp") and is
+    carried inside the actions/back callbacks so in-place edits can rebuild
+    the exact text the user sees from the database.
 
     Normal:        [Открыть, Действия →]
     Long preview:  [↓ больше | Действия →]  then  [Открыть]
@@ -240,33 +266,33 @@ def notification_keyboard(
                 text=i18n.t(lang, "btn_open_yandex"),
                 url="https://mail.yandex.ru/",
             )
-        builder.button(text=i18n.t(lang, "btn_back_arrow"), callback_data=f"msg:back:{message_id}")
+        builder.button(
+            text=i18n.t(lang, "btn_back_arrow"),
+            callback_data=f"msg:back:{message_id}:{state}",
+        )
         builder.button(text=i18n.t(lang, "btn_mark_read_eye"), callback_data=f"msg:read:{message_id}")
         builder.button(text=i18n.t(lang, "btn_delete_trash"), callback_data=f"msg:delete:{message_id}")
         builder.adjust(1, 1, 3)
         return builder.as_markup()
 
-    if truncated or expanded:
+    open_url = f"{settings.MINI_APP_URL}/message/{message_id}"
+    if state in ("trunc", "exp"):
+        is_expanded = state == "exp"
         builder.button(
-            text=i18n.t(lang, "btn_less" if expanded else "btn_more"),
-            callback_data=f"msg:{'less' if expanded else 'more'}:{message_id}",
+            text=i18n.t(lang, "btn_less" if is_expanded else "btn_more"),
+            callback_data=f"msg:{'less' if is_expanded else 'more'}:{message_id}",
         )
         builder.button(
-            text=i18n.t(lang, "btn_actions"), callback_data=f"msg:actions:{message_id}"
+            text=i18n.t(lang, "btn_actions"),
+            callback_data=f"msg:actions:{message_id}:{state}",
         )
-        builder.button(
-            text=i18n.t(lang, "btn_open"),
-            web_app=WebAppInfo(url=f"{settings.MINI_APP_URL}/message/{message_id}"),
-        )
+        builder.button(text=i18n.t(lang, "btn_open"), web_app=WebAppInfo(url=open_url))
         builder.adjust(2, 1)
         return builder.as_markup()
 
+    builder.button(text=i18n.t(lang, "btn_open"), web_app=WebAppInfo(url=open_url))
     builder.button(
-        text=i18n.t(lang, "btn_open"),
-        web_app=WebAppInfo(url=f"{settings.MINI_APP_URL}/message/{message_id}"),
-    )
-    builder.button(
-        text=i18n.t(lang, "btn_actions"), callback_data=f"msg:actions:{message_id}"
+        text=i18n.t(lang, "btn_actions"), callback_data=f"msg:actions:{message_id}:full"
     )
     builder.adjust(2)
     return builder.as_markup()
@@ -306,7 +332,7 @@ def build_oauth_url(provider: str, state: str) -> str:
 # Handlers
 # ---------------------------------------------------------------------------
 def register_handlers(router: Router, db: Database) -> None:
-    # --- /start: always ask for the language first -----------------------
+    # --- /start: language is chosen ONCE, on the very first run ---------
     @router.message(CommandStart())
     async def cmd_start(message: Message) -> None:
         await db.get_or_create_user(
@@ -315,22 +341,39 @@ def register_handlers(router: Router, db: Database) -> None:
             first_name=message.from_user.first_name,
             last_name=message.from_user.last_name,
         )
-        user = await db.get_user(message.from_user.id)
-        lang = (user or {}).get("language", "en")
+        user = await db.get_user(message.from_user.id) or {}
+        lang = user.get("language", "en")
         await message.bot.set_chat_menu_button(
             chat_id=message.chat.id,
             menu_button=configure_menu_button(lang),
         )
+        if user.get("language_chosen"):
+            # Returning user: straight to the main menu (persistent keyboard
+            # + a single message). Language is never asked again.
+            await message.answer(
+                i18n.t(lang, "main_menu"),
+                reply_markup=main_menu_keyboard(lang),
+            )
+            return
         await message.answer(
             i18n.t(lang, "choose_language"),
             reply_markup=language_keyboard(),
         )
 
     async def _finish_language_selection(call: CallbackQuery, lang: str) -> None:
+        """Persist the language and greet the user.
+
+        The language-picker message is replaced by the welcome text and the
+        persistent reply keyboard is attached to it. No separate "main menu"
+        message is sent after the choice.
+        """
         await db.set_language(call.from_user.id, lang)
-        await call.message.edit_text(i18n.t(lang, "welcome"))
+        try:
+            await call.message.delete()
+        except Exception:  # noqa: BLE001 - best-effort cleanup of the picker
+            logger.debug("Could not delete language picker message")
         await call.message.answer(
-            i18n.t(lang, "main_menu"),
+            i18n.t(lang, "welcome"),
             reply_markup=main_menu_keyboard(lang),
         )
         await call.bot.set_chat_menu_button(
@@ -426,6 +469,12 @@ def register_handlers(router: Router, db: Database) -> None:
             i18n.t(lang, "settings_title"),
             reply_markup=settings_keyboard(lang, muted, categories),
         )
+        await call.answer()
+
+    @router.callback_query(F.data == "settings:blacklist")
+    async def on_settings_blacklist(call: CallbackQuery) -> None:
+        # Decorative button for now (no functionality yet): just dismiss the
+        # tap so Telegram doesn't show a stuck spinner.
         await call.answer()
 
     @router.callback_query(F.data.startswith("settings:lang:"))
@@ -572,7 +621,8 @@ def register_handlers(router: Router, db: Database) -> None:
     # --- Message actions on notifications --------------------------------
     async def _load_owned_message(call: CallbackQuery) -> tuple[dict | None, dict | None]:
         try:
-            message_id = int(call.data.split(":", 2)[2])
+            # msg:actions:<id>:<state> / msg:back:<id>:<state> / msg:read:<id> …
+            message_id = int(call.data.split(":")[2])
         except (IndexError, TypeError, ValueError):
             return None, None
         msg = await db.get_message(message_id)
@@ -580,6 +630,21 @@ def register_handlers(router: Router, db: Database) -> None:
         if msg is None or account is None or account["user_id"] != call.from_user.id:
             return None, None
         return msg, account
+
+    def _callback_state(call: CallbackQuery) -> str:
+        """Display state embedded in msg:actions/msg:back callbacks."""
+        parts = call.data.split(":")
+        state = parts[3] if len(parts) >= 4 else "full"
+        return state if state in ("full", "trunc", "exp") else "full"
+
+    def _notification_text_for_state(msg: dict, state: str) -> str:
+        """Rebuild the notification text the user currently sees from the DB.
+
+        Rebuilding instead of re-sending the message text read back from
+        Telegram avoids HTML parse errors (Telegram strips tags/entities
+        when it stores the message, so round-tripping would corrupt it).
+        """
+        return build_notification(msg, force_truncated=(state == "trunc"))[0]
 
     async def _edit_text_or_caption(message: Message, text: str, reply_markup) -> None:
         """Edit a notification message in place (text or media caption).
@@ -613,12 +678,12 @@ def register_handlers(router: Router, db: Database) -> None:
         if msg is None or account is None:
             await call.answer(i18n.t(lang, "error_generic"), show_alert=True)
             return
-        text = call.message.text or call.message.caption or ""
+        state = _callback_state(call)
         await _edit_text_or_caption(
             call.message,
-            text,
+            _notification_text_for_state(msg, state),
             notification_keyboard(
-                msg["id"], lang, account["provider"], actions=True,
+                msg["id"], lang, account["provider"], actions=True, state=state,
                 sender_email=msg.get("sender_email"),
                 provider_message_id=msg.get("provider_message_id"),
             ),
@@ -633,12 +698,12 @@ def register_handlers(router: Router, db: Database) -> None:
         if msg is None or account is None:
             await call.answer(i18n.t(lang, "error_generic"), show_alert=True)
             return
-        text, _image, truncated = build_notification(msg)
+        state = _callback_state(call)
         await _edit_text_or_caption(
             call.message,
-            text,
+            _notification_text_for_state(msg, state),
             notification_keyboard(
-                msg["id"], lang, account["provider"], truncated=truncated,
+                msg["id"], lang, account["provider"], state=state,
             ),
         )
         await call.answer()
@@ -651,11 +716,10 @@ def register_handlers(router: Router, db: Database) -> None:
         if msg is None or account is None:
             await call.answer(i18n.t(lang, "error_generic"), show_alert=True)
             return
-        text, _image, _truncated = build_notification(msg)
         await _edit_text_or_caption(
             call.message,
-            text,
-            notification_keyboard(msg["id"], lang, account["provider"], expanded=True),
+            build_notification(msg)[0],
+            notification_keyboard(msg["id"], lang, account["provider"], state="exp"),
         )
         await call.answer()
 
@@ -667,13 +731,10 @@ def register_handlers(router: Router, db: Database) -> None:
         if msg is None or account is None:
             await call.answer(i18n.t(lang, "error_generic"), show_alert=True)
             return
-        text, _image, truncated = build_notification(msg)
         await _edit_text_or_caption(
             call.message,
-            text,
-            notification_keyboard(
-                msg["id"], lang, account["provider"], truncated=truncated,
-            ),
+            _notification_text_for_state(msg, "trunc"),
+            notification_keyboard(msg["id"], lang, account["provider"], state="trunc"),
         )
         await call.answer()
 
@@ -741,10 +802,11 @@ async def send_new_mail_notification(
     preserved (parse_mode=HTML). When the email has an inline image the
     photo is sent alongside, and any text about the image is dropped.
     """
-    text, image, _truncated = build_notification(message)
+    text, image, truncated = build_notification(message)
     keyboard = notification_keyboard(
         message["id"], lang, provider,
-        truncated=_truncated, sender_email=message.get("sender_email"),
+        state="trunc" if truncated else "full",
+        sender_email=message.get("sender_email"),
     )
     try:
         if image:

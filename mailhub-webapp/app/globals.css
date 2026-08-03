@@ -161,6 +161,29 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ------------------------------------------------------------------ */
+/* Message row highlight: the directly-opened message pulses a few      */
+/* times after you close it and land back on the inbox list            */
+/* ------------------------------------------------------------------ */
+@keyframes row-flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background-color: var(--card);
+  }
+  30%,
+  65% {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--primary) 55%, transparent),
+      0 0 26px color-mix(in srgb, var(--primary) 40%, transparent);
+    background-color: color-mix(in srgb, var(--primary) 16%, var(--card));
+  }
+}
+
+.row-flash {
+  animation: row-flash 1.5s ease-in-out 3;
+}
+
 /* Soft "blob" squash on tap (used by BlobButton) */
 @keyframes bulk {
   0% {

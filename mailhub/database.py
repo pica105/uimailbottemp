@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS users (
     first_name TEXT,
     last_name TEXT,
     language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('ru', 'en')),
+    -- 0 until the user picks a language once in /start; the selection is
+    -- offered only on the very first run, never again
+    language_chosen INTEGER NOT NULL DEFAULT 0,
     -- legacy column: interval is fully automatic now (elastic 10s..5min),
     -- nothing writes it anymore; CHECK kept for schema stability
     polling_interval_seconds INTEGER NOT NULL DEFAULT 300
@@ -115,6 +118,9 @@ class Database:
             "mail_accounts", "unread_bootstrap_done", "BOOLEAN NOT NULL DEFAULT 0"
         )
         await self._ensure_column("users", "muted_senders", "TEXT NOT NULL DEFAULT '[]'")
+        await self._ensure_column(
+            "users", "language_chosen", "INTEGER NOT NULL DEFAULT 0"
+        )
         await self._conn.commit()
 
     async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -334,8 +340,9 @@ class Database:
         return await self.create_user(telegram_id, profile.get("username"), profile.get("first_name"), profile.get("last_name"))
 
     async def set_language(self, telegram_id: int, language: str) -> None:
+        """Set the user's language and mark the one-time language choice as done."""
         await self._execute(
-            "UPDATE users SET language = ? WHERE telegram_id = ?",
+            "UPDATE users SET language = ?, language_chosen = 1 WHERE telegram_id = ?",
             (language, telegram_id),
         )
 

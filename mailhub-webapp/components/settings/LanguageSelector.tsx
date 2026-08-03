@@ -25,9 +25,9 @@ export function LanguageSelector({ value, onChange }: Props) {
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="flex items-center gap-2">
-        <Languages className="h-4 w-4 text-primary" />
+        <Languages className="glow-icon h-4 w-4 text-primary" />
         <div>
-          <Label>{t("settings.language")}</Label>
+          <Label className="glow-soft">{t("settings.language")}</Label>
           <p className="text-xs text-muted-foreground">{t("settings.language_hint")}</p>
         </div>
       </div>

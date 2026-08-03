@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { Inbox } from "lucide-react";
 import { useMessages, useAccounts } from "@/hooks/useMessages";
 import { useAppStore } from "@/stores/appStore";
@@ -48,6 +49,8 @@ export function MessageList() {
   const activeAccountId = useAppStore((s) => s.activeAccountId);
   const activeCategory = useAppStore((s) => s.activeCategory);
   const setOpenMessage = useAppStore((s) => s.setOpenMessage);
+  const highlightMessageId = useAppStore((s) => s.highlightMessageId);
+  const setHighlightMessage = useAppStore((s) => s.setHighlightMessage);
 
   const { data: accountsData, isLoading: accountsLoading } = useAccounts();
   const hasAccounts = (accountsData?.accounts.length ?? 0) > 0;
@@ -61,6 +64,28 @@ export function MessageList() {
     hasNextPage,
     isFetchingNextPage,
   } = useMessages(activeAccountId, activeCategory);
+
+  const messages = data?.pages.flatMap((page) => page.messages) ?? [];
+
+  // When a directly-opened message is closed, gently scroll the list to it
+  // (if it is still present) and let it flash a few times. Too-old messages
+  // that are no longer loaded simply don't trigger anything.
+  const scrolledFor = useRef<number | null>(null);
+  useEffect(() => {
+    if (highlightMessageId === null || isLoading || !data) return;
+    if (scrolledFor.current === highlightMessageId) return;
+    if (!messages.some((m) => m.id === highlightMessageId)) {
+      setHighlightMessage(null);
+      return;
+    }
+    scrolledFor.current = highlightMessageId;
+    const el = document.querySelector(`[data-message-id="${highlightMessageId}"]`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Keep the flash visible for its three pulses, then clear it.
+    const timer = window.setTimeout(() => setHighlightMessage(null), 4600);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightMessageId, isLoading, data]);
 
   if (accountsLoading) return <MessageSkeletons />;
   if (!hasAccounts) {
@@ -84,8 +109,6 @@ export function MessageList() {
       </div>
     );
   }
-
-  const messages = data?.pages.flatMap((page) => page.messages) ?? [];
 
   if (messages.length === 0) {
     return (

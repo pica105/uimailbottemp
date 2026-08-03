@@ -1,7 +1,7 @@
 {
   "welcome": "<b>Welcome to MailHub</b>\n\nAll your mail in Telegram. Connect Gmail or Yandex and get new-mail alerts right here.",
   "choose_language": "<b>Choose your language</b>",
-  "main_menu": "<b>Main menu</b>\n\nWhat would you like to do?\n\n<i>Open the Mini App with the button beside the message field.</i>",
+  "main_menu": "<b>Main menu</b>\n\nWhat would you like to do?",
   "btn_accounts": "My accounts",
   "btn_connect": "Connect",
   "btn_settings": "Settings",
@@ -33,6 +33,7 @@
   "help": "<b>Help</b>\n\n<b>Connect mail</b>\n1. Tap “My accounts” or “Connect”.\n2. Choose Gmail or Yandex.\n3. Open the link and approve access.\n\n<b>Read messages</b>\nOpen the Mini App with the button beside the message field or tap “Open” in a notification.\n\n<b>Manage a message</b>\nTap “Actions” below a notification to hide mail from the sender, open it in the mailbox, mark it as read, or delete it.\n\nMail is never sent on your behalf. Tokens are encrypted.",
   "settings_title": "<b>Settings</b>\n\nLanguage and muted notification categories.",
   "open_mini_app": "Open Mini App",
+  "btn_blacklist": "Blacklist ↓",
   "lang_name_ru": "Русский",
   "lang_name_en": "English",
   "language_changed": "Language changed to {language}.",

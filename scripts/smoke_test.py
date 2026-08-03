@@ -92,8 +92,11 @@ async def _db_scenario(db: Database) -> None:
     user = await db.get_or_create_user(42, username="alice", first_name="Alice", last_name="A")
     assert user["telegram_id"] == 42
     assert user["language"] == "en"
-
+    # Language is chosen exactly once: the flag starts off and flips on choice.
+    assert user["language_chosen"] == 0
     await db.set_language(42, "ru")
+    user = await db.get_user(42)
+    assert user is not None and user["language_chosen"] == 1
     assert (await db.get_settings(42))["language"] == "ru"
 
     await db.update_settings(42, muted_categories=["promo"])
@@ -330,6 +333,8 @@ def test_bot_navigation() -> None:
         assert isinstance(menu_button, MenuButtonWebApp)
         assert menu_button.type == "web_app"
         assert menu_button.web_app.url.startswith("https://")
+        # The main menu no longer advertises the Mini App button.
+        assert "Mini App" not in i18n.t(lang, "main_menu")
     print("  ✓ Telegram reply navigation + Mini App menu button")
 
 
@@ -413,6 +418,34 @@ def test_fixed_poll_interval() -> None:
     print("  ✓ fixed polling interval (10s, from account addition)")
 
 
+def test_settings_keyboard_layout() -> None:
+    """Settings keyboard: language pair, blacklist row, category pairs,
+    and 'Open' paired with a leftover odd category or alone otherwise."""
+    from mailhub.bot_handlers import settings_keyboard
+
+    # 3 categories (odd) → last category shares a row with Open
+    kb = settings_keyboard("ru", ["important"], ["important", "social", "trip"])
+    rows = kb.inline_keyboard
+    assert [len(r) for r in rows] == [2, 1, 2, 2]
+    assert rows[0][0].callback_data == "settings:lang:ru"
+    assert rows[1][0].callback_data == "settings:blacklist"
+    # odd category + Open share the final row of width 2
+    assert rows[-1][0].callback_data == "settings:mute:trip"
+    assert rows[-1][1].web_app is not None
+    assert rows[-1][1].web_app.url.endswith("/settings")
+
+    # 2 categories (even) → Open sits alone
+    kb2 = settings_keyboard("en", [], ["important", "social"])
+    rows2 = kb2.inline_keyboard
+    assert [len(r) for r in rows2] == [2, 1, 2, 1]
+    assert rows2[-1][0].web_app is not None
+
+    # 1 category → pairs with Open; 0 categories → Open alone
+    assert [len(r) for r in settings_keyboard("en", [], ["other"]).inline_keyboard] == [2, 1, 2]
+    assert [len(r) for r in settings_keyboard("en", [], []).inline_keyboard] == [2, 1, 1]
+    print("  ✓ settings keyboard layout")
+
+
 def test_notification_builder() -> None:
     """Rich notification: plain header, inline hyperlinks, bare-URL
     shortening, 250-char preview collapse, and image extraction."""
@@ -452,13 +485,17 @@ def test_notification_builder() -> None:
     assert truncated is True
     assert len(_text) <= 260
 
-    kb = notification_keyboard(9, "ru", "gmail", truncated=True)
+    kb = notification_keyboard(9, "ru", "gmail", state="trunc")
     assert [len(row) for row in kb.inline_keyboard] == [2, 1]
     kb_actions = notification_keyboard(
-        9, "ru", "yandex", actions=True,
+        9, "ru", "yandex", actions=True, state="exp",
         sender_email="noreply@x.ai", provider_message_id="yandex-7",
     )
     assert [len(row) for row in kb_actions.inline_keyboard] == [1, 1, 3]
+    # The display state is carried so in-place edits can rebuild the text.
+    assert kb_actions.inline_keyboard[2][0].callback_data == "msg:back:9:exp"
+    # 'Open' in a notification deep-links to the message, not to settings.
+    assert kb.inline_keyboard[1][0].web_app.url.endswith("/message/9")
     print("  ✓ rich notification builder (links, preview, buttons)")
 
 
@@ -474,5 +511,6 @@ if __name__ == "__main__":
     test_gmail_helpers()
     test_yandex_parsing()
     test_fixed_poll_interval()
+    test_settings_keyboard_layout()
     test_notification_builder()
     print("\nAll smoke tests passed ✅")

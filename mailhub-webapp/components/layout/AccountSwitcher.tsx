@@ -83,7 +83,7 @@ export function AccountSwitcher() {
             {initials(active.email)}
           </AvatarFallback>
         </Avatar>
-        <span className="max-w-[120px] truncate text-sm font-medium">
+        <span className="glow-soft max-w-[120px] truncate text-sm font-medium">
           {active.email}
         </span>
       </span>
@@ -117,7 +117,7 @@ export function AccountSwitcher() {
               className={acc.id === active?.id ? "bg-accent/60" : undefined}
             >
               <Mail className="h-4 w-4 text-muted-foreground" />
-              <span className="flex-1 truncate">{acc.email}</span>
+              <span className="glow-soft flex-1 truncate">{acc.email}</span>
               <span
                 role="button"
                 tabIndex={0}
